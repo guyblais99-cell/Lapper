@@ -7,9 +7,29 @@
     <meta name="description" content="ApexTrack Live — RC lap timer with color gate detection">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="ApexTrack">
+    <link rel="manifest" href="./manifest.webmanifest">
+    <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png">
+    <link rel="apple-touch-icon" href="./icon-192.png">
     <title>ApexTrack Live // RC Lap Timer</title>
 
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.2/peerjs.min.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/11.6.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/11.6.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/11.6.0/firebase-database-compat.js"></script>
+    <script>
+        const firebaseConfig = {
+            apiKey: "AIzaSyC9xRYjrl9g7h_3g_BnRoea7FfcvIlCCa0",
+            authDomain: "recital-tracker.firebaseapp.com",
+            databaseURL: "https://recital-tracker-default-rtdb.firebaseio.com",
+            projectId: "recital-tracker",
+            storageBucket: "recital-tracker.firebasestorage.app",
+            messagingSenderId: "1039061307164",
+            appId: "1:1039061307164:web:060356cd7bb14bdd91f4d9"
+        };
+        if (typeof firebase !== 'undefined' && !firebase.apps.length) {
+            firebase.initializeApp(firebaseConfig);
+        }
+    </script>
 
     <style>
         :root {
@@ -845,8 +865,14 @@
     let gateClearTimer = null;
 
     let settings = loadSettings();
-    let peer = null;
-    let conn = null;
+    let sessionRef = null;
+    let metaRef = null;
+    let triggersRef = null;
+    let firebaseCleanups = [];
+    let monitorId = null;
+    let sensorLastSeen = 0;
+    let monitorHeartbeatTimer = null;
+    let sensorHeartbeatTimer = null;
     let myRole = '';
     let sessionId = '';
 
@@ -1569,9 +1595,7 @@
         raceState = 'finished';
         stopRunningClock();
         updateStatus('Race complete', 'finished');
-        if (conn && conn.open) {
-            conn.send({ type: 'RACE_STATE', state: 'finished', settings: getRacePayload() });
-        }
+        publishRaceState();
 
         const winner = getLeader();
         if (winner && winner.finished) {
@@ -1594,22 +1618,19 @@
         stopRunningClock();
         document.getElementById('running-clock').textContent = '00:00.00';
         document.getElementById('lap-log').innerHTML = '<div class="lap-empty">Laps appear here as cars cross the gate.</div>';
-        document.getElementById('btn-race-start').disabled = !conn || !conn.open;
-        updateStatus(conn && conn.open ? 'Camera connected — press Start race' : 'Waiting for camera…', conn && conn.open ? 'connected' : undefined);
-        if (conn && conn.open) {
-            conn.send({ type: 'RACE_STATE', state: 'ready', settings: getRacePayload() });
-        }
+        document.getElementById('btn-race-start').disabled = !sensorIsOnline();
+        updateStatus(sensorIsOnline() ? 'Camera connected — press Start race' : 'Waiting for camera…', sensorIsOnline() ? 'connected' : undefined);
+        if (triggersRef) triggersRef.remove();
         seedRosterOnMonitor();
         updateRaceUI();
+        publishRaceState();
     }
 
     function startRaceCountdown() {
-        if (raceState !== 'ready' || !conn || !conn.open) return;
+        if (raceState !== 'ready' || !sensorIsOnline()) return;
 
         raceState = 'countdown';
-        if (conn && conn.open) {
-            conn.send({ type: 'RACE_STATE', state: 'countdown', settings: getRacePayload() });
-        }
+        publishRaceState();
         const modal = document.getElementById('countdown-modal');
         const numEl = document.getElementById('countdown-num');
         let remaining = settings.countdownSec;
@@ -1649,9 +1670,7 @@
         updateStatus('Racing live', 'racing');
         document.getElementById('btn-race-start').disabled = true;
 
-        if (conn && conn.open) {
-            conn.send({ type: 'RACE_STATE', state: 'racing', settings: getRacePayload() });
-        }
+        publishRaceState();
         updateRaceUI();
     }
 
@@ -1669,9 +1688,178 @@
         };
     }
 
-    function sendRosterToSensor() {
-        if (conn && conn.open) {
-            conn.send({ type: 'ROSTER', racers: settings.racers });
+    async function publishRaceState() {
+        if (!metaRef || myRole !== 'monitor') return;
+        try {
+            await metaRef.update({
+                raceState,
+                raceStartTime,
+                settings: getRacePayload(),
+                racers: settings.racers,
+                monitorAt: Date.now(),
+                monitorId
+            });
+        } catch (err) {
+            console.error('Failed to sync race state', err);
+        }
+    }
+
+    function sessionPath() {
+        return 'apextrack/' + sessionId;
+    }
+
+    async function ensureFirebaseAuth() {
+        if (typeof firebase === 'undefined') throw new Error('Firebase failed to load');
+        if (!firebase.auth().currentUser) await firebase.auth().signInAnonymously();
+    }
+
+    function sensorIsOnline() {
+        return !!(sensorLastSeen && (Date.now() - sensorLastSeen < 20000));
+    }
+
+    function updateMonitorSensorStatus() {
+        if (myRole !== 'monitor') return;
+        if (sensorIsOnline()) {
+            updateStatus('Camera connected — press Start race', 'connected');
+            if (raceState === 'ready') document.getElementById('btn-race-start').disabled = false;
+        } else {
+            updateStatus('Waiting for camera gate…');
+            document.getElementById('btn-race-start').disabled = true;
+        }
+    }
+
+    function applyMetaFromFirebase(meta) {
+        if (!meta) return;
+        if (meta.sensorLastSeen) sensorLastSeen = meta.sensorLastSeen;
+        applySensorRaceState({
+            state: meta.raceState,
+            settings: Object.assign({}, meta.settings || {}, { racers: meta.racers || (meta.settings && meta.settings.racers) })
+        });
+    }
+
+    async function setupMonitorFirebase() {
+        monitorId = 'm' + Math.random().toString(36).slice(2, 9);
+        const snap = await metaRef.once('value');
+        const meta = snap.val();
+        const now = Date.now();
+        if (meta && meta.monitorId && meta.monitorUntil > now && meta.monitorId !== monitorId) {
+            alert('This room is already in use on another monitor. Choose a different session ID.');
+            teardownSession(true);
+            return;
+        }
+
+        if (meta && meta.sensorLastSeen) sensorLastSeen = meta.sensorLastSeen;
+
+        await metaRef.set({
+            monitorId,
+            monitorUntil: now + 300000,
+            raceState: 'ready',
+            raceStartTime: null,
+            sensorLastSeen: meta ? meta.sensorLastSeen || 0 : 0,
+            settings: getRacePayload(),
+            racers: settings.racers,
+            updatedAt: now
+        });
+        await triggersRef.remove();
+
+        document.getElementById('monitor-view').classList.remove('hidden');
+        document.getElementById('meta-laps').textContent = settings.totalLaps;
+        document.getElementById('meta-race-name').textContent = settings.raceName ? `• ${settings.raceName}` : '';
+        seedRosterOnMonitor();
+
+        metaRef.on('value', s => {
+            const m = s.val();
+            if (m && m.sensorLastSeen) {
+                sensorLastSeen = m.sensorLastSeen;
+                updateMonitorSensorStatus();
+            }
+        });
+        firebaseCleanups.push(() => metaRef.off('value'));
+
+        triggersRef.on('child_added', s => {
+            const val = s.val();
+            if (val && val.carId) processLapTrigger(val.carId);
+        });
+        firebaseCleanups.push(() => triggersRef.off('child_added'));
+
+        monitorHeartbeatTimer = setInterval(() => {
+            metaRef.update({ monitorUntil: Date.now() + 300000, monitorAt: Date.now() });
+        }, 60000);
+
+        updateMonitorSensorStatus();
+        updateRaceUI();
+    }
+
+    async function setupSensorFirebase() {
+        const snap = await metaRef.once('value');
+        if (!snap.exists()) {
+            updateStatus('Waiting for monitor — start monitor with same room ID first');
+        }
+
+        metaRef.on('value', s => applyMetaFromFirebase(s.val()));
+        firebaseCleanups.push(() => metaRef.off('value'));
+
+        const ping = () => metaRef.update({ sensorLastSeen: Date.now() }).catch(() => {});
+        ping();
+        sensorHeartbeatTimer = setInterval(ping, 4000);
+
+        updateStatus('Gate active — scanning', 'connected');
+        document.getElementById('camera-view').classList.remove('hidden');
+        startCameraEngine();
+    }
+
+    function disconnectFirebase() {
+        firebaseCleanups.forEach(fn => { try { fn(); } catch (_) {} });
+        firebaseCleanups = [];
+        if (monitorHeartbeatTimer) { clearInterval(monitorHeartbeatTimer); monitorHeartbeatTimer = null; }
+        if (sensorHeartbeatTimer) { clearInterval(sensorHeartbeatTimer); sensorHeartbeatTimer = null; }
+        if (myRole === 'monitor' && metaRef && monitorId) {
+            metaRef.transaction(cur => {
+                if (cur && cur.monitorId === monitorId) return Object.assign({}, cur, { monitorUntil: 0 });
+                return cur;
+            });
+        }
+        sessionRef = null;
+        metaRef = null;
+        triggersRef = null;
+        monitorId = null;
+        sensorLastSeen = 0;
+    }
+
+    // --- Session / cloud sync ---
+
+    async function initDevice(role) {
+        readSettingsFromUI();
+        sessionId = settings.sessionId;
+        if (!sessionId) {
+            alert('Please enter a room / session ID.');
+            return;
+        }
+
+        myRole = role;
+        document.getElementById('home-panel').classList.add('hidden');
+        document.getElementById('session-panel').classList.remove('hidden');
+        document.getElementById('btn-back').classList.remove('hidden');
+        updateStatus('Connecting to cloud…');
+
+        try {
+            await ensureFirebaseAuth();
+        } catch (err) {
+            alert('Could not connect to cloud. Check internet and that Firebase Anonymous Auth is enabled.');
+            return;
+        }
+
+        sessionRef = firebase.database().ref(sessionPath());
+        metaRef = sessionRef.child('meta');
+        triggersRef = sessionRef.child('triggers');
+
+        try {
+            if (role === 'monitor') await setupMonitorFirebase();
+            else await setupSensorFirebase();
+        } catch (err) {
+            console.error(err);
+            alert('Connection failed: ' + (err.message || 'Check Firebase rules and internet.'));
+            teardownSession(true);
         }
     }
 
@@ -1721,72 +1909,7 @@
         console.log(text);
     }
 
-    // --- PeerJS ---
-
-    function initDevice(role) {
-        readSettingsFromUI();
-        sessionId = settings.sessionId;
-        if (!sessionId) {
-            alert('Please enter a room / session ID.');
-            return;
-        }
-
-        myRole = role;
-        document.getElementById('home-panel').classList.add('hidden');
-        document.getElementById('session-panel').classList.remove('hidden');
-        document.getElementById('btn-back').classList.remove('hidden');
-        updateStatus('Connecting to network…');
-
-        if (role === 'monitor') {
-            peer = new Peer('apextrack-' + sessionId);
-            setupMonitorEvents();
-        } else {
-            peer = new Peer();
-            setupSensorEvents();
-        }
-    }
-
-    function setupMonitorEvents() {
-        peer.on('open', () => {
-            document.getElementById('monitor-view').classList.remove('hidden');
-            document.getElementById('meta-laps').textContent = settings.totalLaps;
-            document.getElementById('meta-race-name').textContent = settings.raceName ? `• ${settings.raceName}` : '';
-            seedRosterOnMonitor();
-            updateStatus('Waiting for camera gate…');
-            updateRaceUI();
-        });
-
-        peer.on('connection', (connection) => {
-            if (conn && conn.open) conn.close();
-            conn = connection;
-            conn.on('open', () => {
-                updateStatus('Camera connected — press Start race', 'connected');
-                document.getElementById('btn-race-start').disabled = false;
-                conn.send({ type: 'RACE_STATE', state: raceState, settings: getRacePayload() });
-                sendRosterToSensor();
-            });
-            handleDataStreams();
-        });
-
-        peer.on('error', (err) => {
-            if (err.type === 'unavailable-id') {
-                alert('This room is already in use on another monitor. Choose a different session ID.');
-                teardownSession(true);
-            }
-        });
-    }
-
-    function handleDataStreams() {
-        conn.on('data', (data) => {
-            if (data.type === 'GATE_TRIGGER' && data.carId) {
-                processLapTrigger(data.carId);
-            }
-        });
-        conn.on('close', () => {
-            updateStatus('Camera disconnected');
-            document.getElementById('btn-race-start').disabled = true;
-        });
-    }
+    // --- Sensor gate ---
 
     function applySensorRaceState(data) {
         if (!data) return;
@@ -1836,34 +1959,10 @@
         if (sentEl) sentEl.textContent = String(sentTriggerCount);
 
         document.getElementById('last-scan').textContent = formatScanLabel(carId);
-        conn.send({ type: 'GATE_TRIGGER', carId });
+        if (triggersRef) {
+            triggersRef.push({ carId, ts: now }).catch(err => console.error('Gate trigger failed', err));
+        }
         haptic(30);
-    }
-
-    function setupSensorEvents() {
-        peer.on('open', () => {
-            updateStatus('Linking to monitor…');
-            const connection = peer.connect('apextrack-' + sessionId, { reliable: true });
-            connection.on('open', () => {
-                conn = connection;
-                updateStatus('Gate active — scanning', 'connected');
-                document.getElementById('camera-view').classList.remove('hidden');
-                startCameraEngine();
-                handleSensorData();
-            });
-            connection.on('error', () => updateStatus('Could not reach monitor. Check room ID.'));
-        });
-    }
-
-    function handleSensorData() {
-        conn.on('data', (data) => {
-            if (data.type === 'RACE_STATE') applySensorRaceState(data);
-            if (data.type === 'ROSTER' && Array.isArray(data.racers)) {
-                sensorRoster = data.racers;
-                renderManualGateButtons();
-            }
-        });
-        conn.on('close', () => updateStatus('Monitor disconnected'));
     }
 
     function formatScanLabel(carId) {
@@ -1976,7 +2075,7 @@
             const scan = () => {
                 if (!scanLoopActive) return;
                 requestAnimationFrame(scan);
-                if (!conn || !conn.open) return;
+                if (!metaRef || myRole !== 'sensor') return;
 
                 scanFrames++;
                 const fpsNow = Date.now();
@@ -2006,7 +2105,7 @@
                 const scan = () => {
                     if (!scanLoopActive) return;
                     requestAnimationFrame(scan);
-                    if (!conn || !conn.open) return;
+                    if (!metaRef || myRole !== 'sensor') return;
                     if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
                     handleColorDetection(processGateFrame(video, canvas, ctx), video);
                 };
@@ -2090,6 +2189,7 @@
         saveSettings();
         document.getElementById('calib-preview').style.background = color.hex;
         renderRacersList();
+        if (myRole === 'monitor') publishRaceState();
         showToast(`${racer.name} color saved`);
         closeColorCalib();
     }
@@ -2107,8 +2207,7 @@
             try { videoTrack.stop(); } catch (_) {}
             videoTrack = null;
         }
-        if (conn) { try { conn.close(); } catch (_) {} conn = null; }
-        if (peer) { try { peer.destroy(); } catch (_) {} peer = null; }
+        disconnectFirebase();
         stopRunningClock();
         if (reload) location.reload();
         else {
@@ -2129,6 +2228,7 @@
         saveSettings();
         document.getElementById('racer-name-input').value = '';
         renderRacersList();
+        if (myRole === 'monitor') publishRaceState();
         showToast(`${name} added — sync color next`);
     }
 
@@ -2136,6 +2236,7 @@
         settings.racers = settings.racers.filter(r => r.id !== id);
         saveSettings();
         renderRacersList();
+        if (myRole === 'monitor') publishRaceState();
     }
 
     function renderRacersList() {
@@ -2218,6 +2319,10 @@
     });
 
     applySettingsToUI();
+
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('./sw.js').catch(() => {});
+    }
 })();
 </script>
 </body>
