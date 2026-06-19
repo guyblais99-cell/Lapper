@@ -422,6 +422,7 @@
         .last-scan { font-size: 1.1rem; font-weight: 700; color: var(--accent-green); margin-top: 4px; }
         .scan-meta { display: flex; justify-content: space-between; gap: 10px; margin-top: 8px; font-size: 0.72rem; color: var(--text-muted); font-family: monospace; }
         .scan-meta strong { color: var(--accent-green); }
+        .scan-meta strong.motion-hot { color: var(--accent-amber); }
 
         .manual-gate-grid {
             display: grid;
@@ -623,8 +624,8 @@
             </div>
             <div>
                 <label for="setting-color-threshold">Color match %</label>
-                <input type="number" id="setting-color-threshold" min="3" max="40" step="1" value="8">
-                <p class="field-hint">Lower = more sensitive. Try 6–12.</p>
+                <input type="number" id="setting-color-threshold" min="3" max="40" step="1" value="6">
+                <p class="field-hint">Normal sensitivity. Motion burst auto-lowers this when a car crosses.</p>
             </div>
         </div>
         <div>
@@ -752,6 +753,7 @@
             <div class="last-scan" id="last-scan" style="font-size:0.95rem;margin-top:6px;">—</div>
             <div class="scan-meta">
                 <span>Scans: <strong id="scan-count">0</strong>/s</span>
+                <span>Motion: <strong id="motion-level">—</strong></span>
                 <span>Sent: <strong id="sent-count">0</strong></span>
             </div>
         </div>
@@ -789,6 +791,13 @@
 
     const STORAGE_KEY = 'apextrack-settings-v5';
     const SCAN_TARGET_WIDTH = 640;
+    const SCAN_BURST_WIDTH = 960;
+    const MOTION_GRID_W = 80;
+    const MOTION_GRID_H = 36;
+    const MOTION_CELL_DELTA = 14;
+    const MOTION_TRIGGER = 0.025;
+    const MOTION_BURST_MS = 550;
+    const GATE_LATCH_MS = 220;
     const DEFAULTS = {
         sessionId: 'rc-race-77',
         raceName: '',
@@ -797,7 +806,7 @@
         minLapSec: 2,
         startGraceSec: 3,
         countdownSec: 3,
-        colorThreshold: 0.08,
+        colorThreshold: 0.06,
         ttsEnabled: true,
         soundEnabled: true,
         mirrorCamera: true,
@@ -822,6 +831,13 @@
     let torchOn = false;
     let scanLoopActive = false;
     let calibratingRacerId = null;
+    /** @type {Uint8Array | null} */
+    let prevMotionGrid = null;
+    let motionBurstUntil = 0;
+    let lastMotionRatio = 0;
+    /** @type {ImageData[]} */
+    let gateFrameBuffer = [];
+    let gateClearTimer = null;
 
     let settings = loadSettings();
     let peer = null;
@@ -886,7 +902,7 @@
         settings.debounceSec = clamp(parseFloat(document.getElementById('setting-debounce').value) || 1.5, 0.5, 30);
         settings.minLapSec = clamp(parseFloat(document.getElementById('setting-minlap').value) || 2, 1, 120);
         settings.startGraceSec = clamp(parseFloat(document.getElementById('setting-start-grace').value) || 3, 0, 30);
-        settings.colorThreshold = clamp(parseInt(document.getElementById('setting-color-threshold').value, 10) || 8, 3, 40) / 100;
+        settings.colorThreshold = clamp(parseInt(document.getElementById('setting-color-threshold').value, 10) || 6, 3, 40) / 100;
         settings.countdownSec = clamp(parseInt(document.getElementById('setting-countdown').value, 10) || 0, 0, 10);
         settings.ttsEnabled = document.getElementById('setting-tts').checked;
         settings.soundEnabled = document.getElementById('setting-sound').checked;
@@ -977,13 +993,13 @@
         return d > 180 ? 360 - d : d;
     }
 
-    function pixelMatchesColor(r, g, b, ref) {
+    function pixelMatchesColor(r, g, b, ref, wide) {
         const hsv = rgbToHsv(r, g, b);
-        if (hsv.s < 0.18) return false;
-        if (hsv.v < 0.12 || hsv.v > 0.98) return false;
-        const hueTol = ref.s < 0.25 ? 12 : 22;
-        const satTol = 0.28;
-        const valTol = 0.38;
+        if (hsv.s < (wide ? 0.12 : 0.18)) return false;
+        if (hsv.v < 0.1 || hsv.v > 0.99) return false;
+        const hueTol = wide ? 32 : (ref.s < 0.25 ? 14 : 24);
+        const satTol = wide ? 0.42 : 0.28;
+        const valTol = wide ? 0.48 : 0.38;
         if (hueDist(hsv.h, ref.h) > hueTol) return false;
         if (Math.abs(hsv.s - ref.s) > satTol) return false;
         if (Math.abs(hsv.v - ref.v) > valTol) return false;
@@ -1007,36 +1023,63 @@
         return { h: mid.h, s: mid.s, v: mid.v, hex: hsvToHex(mid.h, mid.s, mid.v) };
     }
 
-    function drawGateCrop(video, canvas, ctx) {
+    function drawGateCrop(video, canvas, ctx, highRes) {
         const vw = video.videoWidth;
         const vh = video.videoHeight;
         const cropW = vw * 0.88;
         const cropH = vh * 0.42;
         const sx = (vw - cropW) / 2;
         const sy = (vh - cropH) / 2;
-        canvas.width = SCAN_TARGET_WIDTH;
-        canvas.height = Math.max(1, Math.round(SCAN_TARGET_WIDTH * (cropH / cropW)));
+        const targetW = highRes ? SCAN_BURST_WIDTH : SCAN_TARGET_WIDTH;
+        canvas.width = targetW;
+        canvas.height = Math.max(1, Math.round(targetW * (cropH / cropW)));
         ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, canvas.width, canvas.height);
         return ctx.getImageData(0, 0, canvas.width, canvas.height);
     }
 
-    function detectColorInGate(imageData) {
-        const roster = getRacersWithColor();
-        if (!roster.length) return null;
+    function cloneImageData(imageData) {
+        return new ImageData(new Uint8ClampedArray(imageData.data), imageData.width, imageData.height);
+    }
 
+    function buildMotionGrid(imageData) {
         const { data, width, height } = imageData;
+        const grid = new Uint8Array(MOTION_GRID_W * MOTION_GRID_H);
+        for (let gy = 0; gy < MOTION_GRID_H; gy++) {
+            for (let gx = 0; gx < MOTION_GRID_W; gx++) {
+                const x = Math.min(width - 1, Math.floor((gx + 0.5) * width / MOTION_GRID_W));
+                const y = Math.min(height - 1, Math.floor((gy + 0.5) * height / MOTION_GRID_H));
+                const i = (y * width + x) * 4;
+                grid[gy * MOTION_GRID_W + gx] = (data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114) | 0;
+            }
+        }
+        return grid;
+    }
+
+    function measureMotion(current, previous) {
+        if (!previous || previous.length !== current.length) return 0;
+        let hits = 0;
+        for (let i = 0; i < current.length; i++) {
+            if (Math.abs(current[i] - previous[i]) >= MOTION_CELL_DELTA) hits++;
+        }
+        return hits / current.length;
+    }
+
+    function scoreColorRegion(imageData, roster, yStartRatio, yEndRatio, step, threshold, wide) {
+        const { data, width, height } = imageData;
+        const y0 = Math.floor(height * yStartRatio);
+        const y1 = Math.floor(height * yEndRatio);
         const scores = {};
         let colorful = 0;
 
-        for (let y = 0; y < height; y += 2) {
-            for (let x = 0; x < width; x += 2) {
+        for (let y = y0; y < y1; y += step) {
+            for (let x = 0; x < width; x += step) {
                 const i = (y * width + x) * 4;
                 const r = data[i], g = data[i + 1], b = data[i + 2];
                 const hsv = rgbToHsv(r, g, b);
-                if (hsv.s < 0.18 || hsv.v < 0.12) continue;
+                if (hsv.s < (wide ? 0.12 : 0.18) || hsv.v < 0.1) continue;
                 colorful++;
                 roster.forEach(racer => {
-                    if (pixelMatchesColor(r, g, b, racer.color)) {
+                    if (pixelMatchesColor(r, g, b, racer.color, wide)) {
                         scores[racer.id] = (scores[racer.id] || 0) + 1;
                     }
                 });
@@ -1047,8 +1090,6 @@
 
         let bestId = null;
         let bestRatio = 0;
-        const threshold = settings.colorThreshold;
-
         roster.forEach(racer => {
             const ratio = (scores[racer.id] || 0) / colorful;
             if (ratio >= threshold && ratio > bestRatio) {
@@ -1057,7 +1098,67 @@
             }
         });
 
-        return bestId ? { carId: bestId, ratio: bestRatio } : null;
+        return bestId ? { carId: bestId, ratio: bestRatio, burst: wide } : null;
+    }
+
+    function detectColorInGate(imageData, options) {
+        const aggressive = options && options.aggressive;
+        const roster = getRacersWithColor();
+        if (!roster.length) return null;
+
+        const step = aggressive ? 1 : 2;
+        const threshold = aggressive
+            ? Math.max(0.03, settings.colorThreshold * 0.45)
+            : settings.colorThreshold;
+        const wide = !!aggressive;
+
+        let result = scoreColorRegion(imageData, roster, 0, 1, step, threshold, wide);
+        if (!result && aggressive) {
+            result = scoreColorRegion(imageData, roster, 0.28, 0.72, 1, threshold * 0.85, true);
+        }
+        return result;
+    }
+
+    function analyzeGateFrames(frames, aggressive) {
+        for (let i = frames.length - 1; i >= 0; i--) {
+            const hit = detectColorInGate(frames[i], { aggressive });
+            if (hit) return hit;
+        }
+        return null;
+    }
+
+    function processGateFrame(video, canvas, ctx) {
+        const now = Date.now();
+        const motionGrid = buildMotionGrid(drawGateCrop(video, canvas, ctx, false));
+        lastMotionRatio = measureMotion(motionGrid, prevMotionGrid);
+        prevMotionGrid = motionGrid;
+
+        const motionEl = document.getElementById('motion-level');
+        const motionHot = lastMotionRatio >= MOTION_TRIGGER || now < motionBurstUntil;
+        if (motionEl) {
+            motionEl.textContent = motionHot ? 'YES' : '—';
+            motionEl.classList.toggle('motion-hot', motionHot);
+        }
+
+        if (lastMotionRatio >= MOTION_TRIGGER) {
+            motionBurstUntil = now + MOTION_BURST_MS;
+        }
+
+        const aggressive = now < motionBurstUntil;
+        const frame = drawGateCrop(video, canvas, ctx, aggressive);
+
+        if (aggressive) {
+            gateFrameBuffer.push(cloneImageData(frame));
+            if (gateFrameBuffer.length > 6) gateFrameBuffer.shift();
+        } else if (gateFrameBuffer.length > 2) {
+            gateFrameBuffer.shift();
+        }
+
+        const frames = aggressive ? gateFrameBuffer.slice() : [frame];
+        if (aggressive && frames.length) {
+            frames[frames.length - 1] = frame;
+        }
+        return analyzeGateFrames(frames, aggressive);
     }
 
     function updateGateModeUI() {
@@ -1678,6 +1779,9 @@
             lastSentByCar = {};
             gateCarVisible = false;
             gateCurrentId = '';
+            gateFrameBuffer = [];
+            prevMotionGrid = null;
+            motionBurstUntil = 0;
         }
         updateSensorStatusUI();
         renderManualGateButtons();
@@ -1743,17 +1847,31 @@
 
     function handleColorDetection(result, video) {
         const info = document.getElementById('color-match-info');
+
         if (!result) {
             video.classList.remove('gate-locked');
-            gateCarVisible = false;
-            gateCurrentId = '';
-            if (info) info.textContent = 'Match: —';
+            if (info && !gateCarVisible) info.textContent = 'Match: —';
+
+            if (gateCarVisible && !gateClearTimer) {
+                gateClearTimer = setTimeout(() => {
+                    gateCarVisible = false;
+                    gateCurrentId = '';
+                    gateClearTimer = null;
+                    if (info) info.textContent = 'Match: —';
+                }, GATE_LATCH_MS);
+            }
             return;
         }
 
-        const { carId, ratio } = result;
+        if (gateClearTimer) {
+            clearTimeout(gateClearTimer);
+            gateClearTimer = null;
+        }
+
+        const { carId, ratio, burst } = result;
         video.classList.add('gate-locked');
-        if (info) info.textContent = `Match: ${Math.round(ratio * 100)}% · ${resolveRacerName(carId)}`;
+        const burstTag = burst ? ' ⚡' : '';
+        if (info) info.textContent = `Match: ${Math.round(ratio * 100)}% · ${resolveRacerName(carId)}${burstTag}`;
 
         if (!gateCarVisible) {
             maybeSendGateTrigger(carId);
@@ -1809,14 +1927,18 @@
         sentTriggerCount = 0;
         scanFrames = 0;
         scanLoopActive = true;
+        prevMotionGrid = null;
+        motionBurstUntil = 0;
+        gateFrameBuffer = [];
+        gateClearTimer = null;
         let fpsLastTick = Date.now();
 
         navigator.mediaDevices.getUserMedia({
             video: {
                 facingMode: 'environment',
-                width: { ideal: 1280 },
-                height: { ideal: 720 },
-                frameRate: { ideal: 60, min: 24 }
+                width: { ideal: 1920 },
+                height: { ideal: 1080 },
+                frameRate: { ideal: 60, min: 30 }
             },
             audio: false
         }).then(stream => {
@@ -1842,11 +1964,29 @@
 
                 if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
 
-                const imageData = drawGateCrop(video, canvas, ctx);
-                handleColorDetection(detectColorInGate(imageData), video);
+                handleColorDetection(processGateFrame(video, canvas, ctx), video);
             };
             requestAnimationFrame(scan);
-        }).catch(err => alert('Camera access failed: ' + err.message));
+        }).catch(() => {
+            navigator.mediaDevices.getUserMedia({
+                video: { facingMode: 'environment', frameRate: { ideal: 30 } },
+                audio: false
+            }).then(stream => {
+                video.srcObject = stream;
+                videoTrack = stream.getVideoTracks()[0] || null;
+                video.setAttribute('playsinline', true);
+                return video.play();
+            }).then(() => {
+                const scan = () => {
+                    if (!scanLoopActive) return;
+                    requestAnimationFrame(scan);
+                    if (!conn || !conn.open) return;
+                    if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
+                    handleColorDetection(processGateFrame(video, canvas, ctx), video);
+                };
+                requestAnimationFrame(scan);
+            }).catch(err => alert('Camera access failed: ' + err.message));
+        });
     }
 
     function openColorCalib(racerId) {
@@ -1931,6 +2071,12 @@
     function teardownSession(reload) {
         scanLoopActive = false;
         closeColorCalib();
+        if (gateClearTimer) {
+            clearTimeout(gateClearTimer);
+            gateClearTimer = null;
+        }
+        prevMotionGrid = null;
+        gateFrameBuffer = [];
         if (videoTrack) {
             try { videoTrack.stop(); } catch (_) {}
             videoTrack = null;
