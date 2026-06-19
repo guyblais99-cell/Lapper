@@ -625,7 +625,12 @@
             <div>
                 <label for="setting-color-threshold">Color match %</label>
                 <input type="number" id="setting-color-threshold" min="3" max="40" step="1" value="6">
-                <p class="field-hint">Normal sensitivity. Motion burst auto-lowers this when a car crosses.</p>
+                <p class="field-hint">Normal color sensitivity.</p>
+            </div>
+            <div>
+                <label for="setting-motion-trigger">Motion trigger %</label>
+                <input type="number" id="setting-motion-trigger" min="5" max="30" step="1" value="12">
+                <p class="field-hint">Raise if wind/grass triggers motion. Lower for fast small cars.</p>
             </div>
         </div>
         <div>
@@ -794,9 +799,8 @@
     const SCAN_BURST_WIDTH = 960;
     const MOTION_GRID_W = 80;
     const MOTION_GRID_H = 36;
-    const MOTION_CELL_DELTA = 14;
-    const MOTION_TRIGGER = 0.025;
-    const MOTION_BURST_MS = 550;
+    const MOTION_CELL_DELTA = 22;
+    const MOTION_BURST_MS = 380;
     const GATE_LATCH_MS = 220;
     const DEFAULTS = {
         sessionId: 'rc-race-77',
@@ -807,6 +811,7 @@
         startGraceSec: 3,
         countdownSec: 3,
         colorThreshold: 0.06,
+        motionTrigger: 0.12,
         ttsEnabled: true,
         soundEnabled: true,
         mirrorCamera: true,
@@ -875,6 +880,7 @@
         if (merged.startGraceSec == null) merged.startGraceSec = DEFAULTS.startGraceSec;
         if (merged.manualGate == null) merged.manualGate = false;
         if (merged.colorThreshold == null) merged.colorThreshold = DEFAULTS.colorThreshold;
+        if (merged.motionTrigger == null) merged.motionTrigger = DEFAULTS.motionTrigger;
         if (Array.isArray(data.savedMarkers) && !merged.racers.length) {
             merged.racers = data.savedMarkers.map((id, i) => ({ id: `c${i + 1}`, name: String(id) }));
         }
@@ -903,6 +909,7 @@
         settings.minLapSec = clamp(parseFloat(document.getElementById('setting-minlap').value) || 2, 1, 120);
         settings.startGraceSec = clamp(parseFloat(document.getElementById('setting-start-grace').value) || 3, 0, 30);
         settings.colorThreshold = clamp(parseInt(document.getElementById('setting-color-threshold').value, 10) || 6, 3, 40) / 100;
+        settings.motionTrigger = clamp(parseInt(document.getElementById('setting-motion-trigger').value, 10) || 12, 5, 30) / 100;
         settings.countdownSec = clamp(parseInt(document.getElementById('setting-countdown').value, 10) || 0, 0, 10);
         settings.ttsEnabled = document.getElementById('setting-tts').checked;
         settings.soundEnabled = document.getElementById('setting-sound').checked;
@@ -921,6 +928,7 @@
         document.getElementById('setting-minlap').value = settings.minLapSec;
         document.getElementById('setting-start-grace').value = settings.startGraceSec;
         document.getElementById('setting-color-threshold').value = Math.round(settings.colorThreshold * 100);
+        document.getElementById('setting-motion-trigger').value = Math.round(settings.motionTrigger * 100);
         document.getElementById('setting-countdown').value = settings.countdownSec;
         document.getElementById('setting-tts').checked = settings.ttsEnabled;
         document.getElementById('setting-sound').checked = settings.soundEnabled;
@@ -1058,10 +1066,21 @@
     function measureMotion(current, previous) {
         if (!previous || previous.length !== current.length) return 0;
         let hits = 0;
-        for (let i = 0; i < current.length; i++) {
-            if (Math.abs(current[i] - previous[i]) >= MOTION_CELL_DELTA) hits++;
+        let counted = 0;
+        const gxMin = Math.floor(MOTION_GRID_W * 0.22);
+        const gxMax = Math.floor(MOTION_GRID_W * 0.78);
+        const gyMin = Math.floor(MOTION_GRID_H * 0.18);
+        const gyMax = Math.floor(MOTION_GRID_H * 0.82);
+
+        for (let gy = 0; gy < MOTION_GRID_H; gy++) {
+            for (let gx = 0; gx < MOTION_GRID_W; gx++) {
+                if (gx < gxMin || gx > gxMax || gy < gyMin || gy > gyMax) continue;
+                const i = gy * MOTION_GRID_W + gx;
+                counted++;
+                if (Math.abs(current[i] - previous[i]) >= MOTION_CELL_DELTA) hits++;
+            }
         }
-        return hits / current.length;
+        return counted ? hits / counted : 0;
     }
 
     function scoreColorRegion(imageData, roster, yStartRatio, yEndRatio, step, threshold, wide) {
@@ -1133,32 +1152,37 @@
         lastMotionRatio = measureMotion(motionGrid, prevMotionGrid);
         prevMotionGrid = motionGrid;
 
+        const motionTrigger = settings.motionTrigger;
         const motionEl = document.getElementById('motion-level');
-        const motionHot = lastMotionRatio >= MOTION_TRIGGER || now < motionBurstUntil;
+        const hasMotion = lastMotionRatio >= motionTrigger;
+        const aggressive = now < motionBurstUntil;
+
         if (motionEl) {
-            motionEl.textContent = motionHot ? 'YES' : '—';
-            motionEl.classList.toggle('motion-hot', motionHot);
+            motionEl.textContent = hasMotion ? 'YES' : (aggressive ? '…' : '—');
+            motionEl.classList.toggle('motion-hot', hasMotion || aggressive);
         }
 
-        if (lastMotionRatio >= MOTION_TRIGGER) {
+        if (hasMotion) {
             motionBurstUntil = now + MOTION_BURST_MS;
         }
 
-        const aggressive = now < motionBurstUntil;
-        const frame = drawGateCrop(video, canvas, ctx, aggressive);
+        const scanningHard = hasMotion || aggressive;
+        const frame = drawGateCrop(video, canvas, ctx, scanningHard);
 
-        if (aggressive) {
+        if (scanningHard) {
             gateFrameBuffer.push(cloneImageData(frame));
             if (gateFrameBuffer.length > 6) gateFrameBuffer.shift();
         } else if (gateFrameBuffer.length > 2) {
             gateFrameBuffer.shift();
         }
 
-        const frames = aggressive ? gateFrameBuffer.slice() : [frame];
-        if (aggressive && frames.length) {
-            frames[frames.length - 1] = frame;
+        if (!scanningHard) {
+            return detectColorInGate(frame, { aggressive: false });
         }
-        return analyzeGateFrames(frames, aggressive);
+
+        const frames = gateFrameBuffer.slice();
+        if (frames.length) frames[frames.length - 1] = frame;
+        return analyzeGateFrames(frames, true);
     }
 
     function updateGateModeUI() {
@@ -1639,6 +1663,7 @@
             minLapSec: settings.minLapSec,
             startGraceSec: settings.startGraceSec,
             colorThreshold: settings.colorThreshold,
+            motionTrigger: settings.motionTrigger,
             raceStartTime: raceStartTime,
             racers: settings.racers
         };
@@ -1773,6 +1798,7 @@
             settings.minLapSec = data.settings.minLapSec ?? settings.minLapSec;
             settings.startGraceSec = data.settings.startGraceSec ?? settings.startGraceSec;
             if (data.settings.colorThreshold != null) settings.colorThreshold = data.settings.colorThreshold;
+            if (data.settings.motionTrigger != null) settings.motionTrigger = data.settings.motionTrigger;
             if (Array.isArray(data.settings.racers)) sensorRoster = data.settings.racers;
         }
         if (data.state === 'racing') {
@@ -2185,7 +2211,7 @@
     });
 
     ['session-id-input', 'race-name-input', 'race-laps-input',
-     'setting-debounce', 'setting-minlap', 'setting-start-grace', 'setting-color-threshold', 'setting-countdown',
+     'setting-debounce', 'setting-minlap', 'setting-start-grace', 'setting-color-threshold', 'setting-motion-trigger', 'setting-countdown',
      'setting-tts', 'setting-sound', 'setting-mirror', 'setting-haptic', 'setting-manual-gate'
     ].forEach(id => {
         document.getElementById(id).addEventListener('change', () => readSettingsFromUI());
