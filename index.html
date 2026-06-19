@@ -355,6 +355,30 @@
         }
         .qr-card-label { font-size: 0.72rem; color: #333; font-weight: 700; margin-top: 6px; max-width: 120px; word-break: break-word; }
 
+        .racer-list { display: flex; flex-direction: column; gap: 8px; }
+        .racer-row {
+            display: grid;
+            grid-template-columns: 44px 1fr auto;
+            gap: 10px;
+            align-items: center;
+            padding: 10px 12px;
+            background: var(--bg-dark);
+            border-radius: 10px;
+            border: 1px solid var(--border);
+        }
+        .racer-id-badge {
+            width: 44px; height: 44px;
+            border-radius: 10px;
+            background: var(--panel-elevated);
+            display: flex; align-items: center; justify-content: center;
+            font-family: monospace;
+            font-weight: 800;
+            font-size: 0.85rem;
+            color: var(--accent-green);
+        }
+        .racer-actions { display: flex; gap: 6px; }
+        .racer-actions .btn { width: auto; padding: 8px 10px; min-width: 42px; }
+
         /* Modal */
         .modal-backdrop {
             position: fixed; inset: 0;
@@ -419,8 +443,8 @@
 <div class="container" id="home-panel">
     <div class="tabs" role="tablist">
         <button type="button" class="tab active" data-tab="race" role="tab">Race</button>
+        <button type="button" class="tab" data-tab="racers" role="tab">Racers</button>
         <button type="button" class="tab" data-tab="settings" role="tab">Settings</button>
-        <button type="button" class="tab" data-tab="markers" role="tab">Markers</button>
     </div>
 
     <!-- Race tab -->
@@ -442,6 +466,35 @@
         </div>
         <button type="button" class="btn btn-primary" id="btn-start-monitor">Start as Monitor</button>
         <button type="button" class="btn btn-sensor" id="btn-start-sensor">Start as Camera Gate</button>
+    </div>
+
+    <!-- Racers tab -->
+    <div class="tab-panel" id="tab-racers" role="tabpanel">
+        <p class="field-hint" style="margin-bottom:4px;">Register who’s racing before you start. Use a <strong>short QR ID</strong> on the car and a <strong>display name</strong> for the monitor and voice.</p>
+        <div class="grid-2">
+            <div>
+                <label for="racer-id-input">QR ID (on car)</label>
+                <input type="text" id="racer-id-input" autocomplete="off" placeholder="e.g. 1" maxlength="8">
+            </div>
+            <div>
+                <label for="racer-name-input">Display name</label>
+                <input type="text" id="racer-name-input" autocomplete="off" placeholder="e.g. Buggy 1">
+            </div>
+        </div>
+        <button type="button" class="btn btn-primary" id="btn-add-racer">Add racer</button>
+
+        <h2 style="margin-top:8px;">Registered <span id="racer-count" style="color:var(--text-muted);">(0)</span></h2>
+        <div class="racer-list" id="racer-list">
+            <div class="lap-empty">No racers yet — add at least one before race day.</div>
+        </div>
+
+        <h2 style="margin-top:16px;">Print markers</h2>
+        <p class="field-hint">Tap <strong>QR</strong> on a racer to preview their code, or print all below.</p>
+        <div id="qrcode-container" class="hidden" style="text-align:center;margin-top:12px;">
+            <div id="qrcode-output"></div>
+            <p class="field-hint" id="qrcode-preview-label" style="margin-top:8px;"></p>
+        </div>
+        <div class="qr-list" id="qr-saved-list"></div>
     </div>
 
     <!-- Settings tab -->
@@ -494,20 +547,6 @@
 
         <button type="button" class="btn btn-ghost btn-sm" id="btn-reset-settings">Reset settings to defaults</button>
     </div>
-
-    <!-- Markers tab -->
-    <div class="tab-panel" id="tab-markers" role="tabpanel">
-        <div>
-            <label for="qr-text">Car name / ID</label>
-            <input type="text" id="qr-text" autocomplete="off" placeholder="e.g. Buggy 1">
-        </div>
-        <button type="button" class="btn btn-ghost" id="btn-generate-qr">Generate marker</button>
-        <div id="qrcode-container" class="hidden">
-            <div id="qrcode-output"></div>
-        </div>
-        <div class="qr-list" id="qr-saved-list"></div>
-        <p class="field-hint" style="text-align:center;">Print markers and tape them to each car. The camera reads the QR at the finish line.</p>
-    </div>
 </div>
 
 <!-- SESSION PANEL (monitor or sensor) -->
@@ -542,7 +581,7 @@
 
         <h2>Leaderboard</h2>
         <div class="leaderboard" id="leaderboard">
-            <div class="lap-empty">Waiting for first crossing…</div>
+            <div class="lap-empty">Add racers on the home screen, or wait for first crossing…</div>
         </div>
 
         <h2>Live feed</h2>
@@ -586,7 +625,7 @@
 (function () {
     'use strict';
 
-    const STORAGE_KEY = 'apextrack-settings-v1';
+    const STORAGE_KEY = 'apextrack-settings-v2';
     const DEFAULTS = {
         sessionId: 'rc-race-77',
         raceName: '',
@@ -598,8 +637,11 @@
         soundEnabled: true,
         mirrorCamera: true,
         hapticEnabled: true,
-        savedMarkers: []
+        racers: []
     };
+
+    /** @type {Array<{id: string, name: string}>} sensor-side name lookup */
+    let sensorRoster = [];
 
     let settings = loadSettings();
     let peer = null;
@@ -625,9 +667,24 @@
     function loadSettings() {
         try {
             const raw = localStorage.getItem(STORAGE_KEY);
-            if (raw) return { ...DEFAULTS, ...JSON.parse(raw) };
+            if (raw) return normalizeSettings(JSON.parse(raw));
+            const legacy = localStorage.getItem('apextrack-settings-v1');
+            if (legacy) return normalizeSettings(JSON.parse(legacy));
         } catch (_) { /* ignore */ }
-        return { ...DEFAULTS };
+        return { ...DEFAULTS, racers: [] };
+    }
+
+    function normalizeSettings(data) {
+        const merged = { ...DEFAULTS, ...data };
+        if (!Array.isArray(merged.racers)) merged.racers = [];
+        if (Array.isArray(data.savedMarkers) && !merged.racers.length) {
+            merged.racers = data.savedMarkers.map(id => ({ id: String(id), name: String(id) }));
+        }
+        merged.racers = merged.racers
+            .filter(r => r && r.id)
+            .map(r => ({ id: String(r.id).trim(), name: String(r.name || r.id).trim() }))
+            .filter(r => r.id);
+        return merged;
     }
 
     function saveSettings() {
@@ -659,7 +716,39 @@
         document.getElementById('setting-sound').checked = settings.soundEnabled;
         document.getElementById('setting-mirror').checked = settings.mirrorCamera;
         document.getElementById('setting-haptic').checked = settings.hapticEnabled;
-        renderSavedMarkers();
+        renderRacersList();
+        renderRacerQRGrid();
+    }
+
+    function resolveRacerName(id) {
+        const racer = settings.racers.find(r => r.id === id);
+        if (racer) return racer.name;
+        const fromSensor = sensorRoster.find(r => r.id === id);
+        return fromSensor ? fromSensor.name : id;
+    }
+
+    function seedRosterOnMonitor() {
+        settings.racers.forEach(r => {
+            if (!cars[r.id]) {
+                cars[r.id] = {
+                    id: r.id,
+                    name: r.name,
+                    lapCount: 0,
+                    bestLap: Infinity,
+                    lastCrossing: 0,
+                    finished: false,
+                    finishTime: null,
+                    registered: true
+                };
+            } else {
+                cars[r.id].name = r.name;
+                cars[r.id].registered = true;
+            }
+        });
+    }
+
+    function getRegisteredCarCount() {
+        return settings.racers.length || Object.keys(cars).length;
     }
 
     function clamp(n, min, max) {
@@ -788,22 +877,27 @@
         if (!cars[id]) {
             cars[id] = {
                 id,
-                name: id,
+                name: resolveRacerName(id),
                 lapCount: 0,
                 bestLap: Infinity,
                 lastCrossing: 0,
                 finished: false,
-                finishTime: null
+                finishTime: null,
+                registered: settings.racers.some(r => r.id === id)
             };
+        } else {
+            cars[id].name = resolveRacerName(id);
         }
         return cars[id];
     }
 
     function getSortedCars() {
+        const registeredOrder = settings.racers.map(r => r.id);
         return Object.values(cars).sort((a, b) => {
             if (b.lapCount !== a.lapCount) return b.lapCount - a.lapCount;
             if (a.bestLap !== b.bestLap) return a.bestLap - b.bestLap;
-            return (a.finishTime || Infinity) - (b.finishTime || Infinity);
+            if (a.finishTime !== b.finishTime) return (a.finishTime || Infinity) - (b.finishTime || Infinity);
+            return registeredOrder.indexOf(a.id) - registeredOrder.indexOf(b.id);
         });
     }
 
@@ -825,13 +919,13 @@
             (raceState === 'finished' ? ' finished' : '');
 
         const sorted = getSortedCars();
-        document.getElementById('stat-cars').textContent = sorted.length;
+        document.getElementById('stat-cars').textContent = getRegisteredCarCount();
         document.getElementById('stat-total-laps').textContent = sorted.reduce((s, c) => s + c.lapCount, 0);
 
         const leader = getLeader();
-        document.getElementById('stat-leader').textContent = leader
+        document.getElementById('stat-leader').textContent = leader && leader.lapCount > 0
             ? `${leader.name} (${leader.lapCount}/${settings.totalLaps})`
-            : '—';
+            : (leader ? `${leader.name} (0/${settings.totalLaps})` : '—');
 
         renderLeaderboard(sorted);
     }
@@ -839,23 +933,24 @@
     function renderLeaderboard(sorted) {
         const board = document.getElementById('leaderboard');
         if (!sorted.length) {
-            board.innerHTML = '<div class="lap-empty">Waiting for first crossing…</div>';
+            board.innerHTML = '<div class="lap-empty">Add racers on the home screen, or wait for first crossing…</div>';
             return;
         }
         board.innerHTML = sorted.map((car, i) => {
             const pos = i + 1;
             const posClass = pos <= 3 ? `p${pos}` : '';
             const isLeader = pos === 1 && car.lapCount > 0;
+            const waiting = car.lapCount === 0 && raceState !== 'finished';
             return `
                 <div class="leader-row ${isLeader ? 'leader' : ''} ${car.finished ? 'finished' : ''}">
-                    <div class="pos-badge ${posClass}">${pos}</div>
+                    <div class="pos-badge ${posClass}">${car.lapCount > 0 ? pos : '·'}</div>
                     <div>
                         <div class="car-name">${escapeHtml(car.name)}</div>
-                        <div class="car-meta">Best ${car.bestLap < Infinity ? formatTime(car.bestLap) : '—'}</div>
+                        <div class="car-meta">${waiting ? 'Ready • ID ' + escapeHtml(car.id) : 'Best ' + (car.bestLap < Infinity ? formatTime(car.bestLap) : '—')}</div>
                     </div>
                     <div class="car-laps">
                         ${car.lapCount}<span style="color:var(--text-muted);font-weight:400;">/${settings.totalLaps}</span>
-                        <div class="car-best">${car.finished ? 'FIN' : ''}</div>
+                        <div class="car-best">${car.finished ? 'FIN' : (waiting ? 'TBD' : '')}</div>
                     </div>
                 </div>`;
         }).join('');
@@ -988,6 +1083,7 @@
         document.getElementById('lap-log').innerHTML = '<div class="lap-empty">Laps appear here as cars cross the gate.</div>';
         document.getElementById('btn-race-start').disabled = !conn || !conn.open;
         updateStatus(conn && conn.open ? 'Camera connected — press Start race' : 'Waiting for camera…', conn && conn.open ? 'connected' : undefined);
+        seedRosterOnMonitor();
         updateRaceUI();
     }
 
@@ -1045,8 +1141,15 @@
             totalLaps: settings.totalLaps,
             raceName: settings.raceName,
             debounceSec: settings.debounceSec,
-            minLapSec: settings.minLapSec
+            minLapSec: settings.minLapSec,
+            racers: settings.racers
         };
+    }
+
+    function sendRosterToSensor() {
+        if (conn && conn.open) {
+            conn.send({ type: 'ROSTER', racers: settings.racers });
+        }
     }
 
     function exportResults() {
@@ -1125,6 +1228,7 @@
             document.getElementById('monitor-view').classList.remove('hidden');
             document.getElementById('meta-laps').textContent = settings.totalLaps;
             document.getElementById('meta-race-name').textContent = settings.raceName ? `• ${settings.raceName}` : '';
+            seedRosterOnMonitor();
             updateStatus('Waiting for camera gate…');
             updateRaceUI();
         });
@@ -1136,6 +1240,7 @@
                 updateStatus('Camera connected — press Start race', 'connected');
                 document.getElementById('btn-race-start').disabled = false;
                 conn.send({ type: 'RACE_STATE', state: raceState, settings: getRacePayload() });
+                sendRosterToSensor();
             });
             handleDataStreams();
         });
@@ -1183,13 +1288,24 @@
                     settings.raceName = data.settings.raceName ?? settings.raceName;
                     settings.debounceSec = data.settings.debounceSec ?? settings.debounceSec;
                     settings.minLapSec = data.settings.minLapSec ?? settings.minLapSec;
+                    if (Array.isArray(data.settings.racers)) {
+                        sensorRoster = data.settings.racers;
+                    }
                 }
                 if (data.state === 'racing') {
                     Object.keys(scanCooldown).forEach(k => delete scanCooldown[k]);
                 }
             }
+            if (data.type === 'ROSTER' && Array.isArray(data.racers)) {
+                sensorRoster = data.racers;
+            }
         });
         conn.on('close', () => updateStatus('Monitor disconnected'));
+    }
+
+    function formatScanLabel(carId) {
+        const name = resolveRacerName(carId);
+        return name === carId ? carId : `${name} (${carId})`;
     }
 
     function startCameraEngine() {
@@ -1218,7 +1334,7 @@
 
                     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
                     const code = jsQR(imageData.data, imageData.width, imageData.height, {
-                        inversionAttempts: 'dontInvert'
+                        inversionAttempts: 'attemptBoth'
                     });
 
                     if (code && code.data) {
@@ -1228,7 +1344,7 @@
 
                         if (!scanCooldown[carId] || now - scanCooldown[carId] >= debounceMs) {
                             scanCooldown[carId] = now;
-                            document.getElementById('last-scan').textContent = carId;
+                            document.getElementById('last-scan').textContent = formatScanLabel(carId);
                             conn.send({ type: 'GATE_TRIGGER', carId });
                             haptic(30);
                         }
@@ -1256,56 +1372,107 @@
         }
     }
 
-    // --- QR markers ---
+    // --- Racers & QR markers ---
 
-    function generateQR() {
-        const text = document.getElementById('qr-text').value.trim();
-        if (!text) { alert('Enter a car name or ID first.'); return; }
-
-        if (!settings.savedMarkers.includes(text)) {
-            settings.savedMarkers.push(text);
-            if (settings.savedMarkers.length > 12) settings.savedMarkers.shift();
-            saveSettings();
+    function addRacer() {
+        const id = document.getElementById('racer-id-input').value.trim();
+        const name = document.getElementById('racer-name-input').value.trim();
+        if (!id) { alert('Enter a QR ID — keep it short, e.g. "1" or "B1".'); return; }
+        if (!name) { alert('Enter a display name for announcements and the leaderboard.'); return; }
+        if (settings.racers.some(r => r.id.toLowerCase() === id.toLowerCase())) {
+            alert('That QR ID is already registered.');
+            return;
         }
-
-        const container = document.getElementById('qrcode-container');
-        const output = document.getElementById('qrcode-output');
-        output.innerHTML = '';
-        container.classList.remove('hidden');
-
-        new QRCode(output, {
-            text,
-            width: 200,
-            height: 200,
-            colorDark: '#000000',
-            colorLight: '#ffffff',
-            correctLevel: QRCode.CorrectLevel.H
-        });
-
-        renderSavedMarkers();
-        document.getElementById('qr-text').value = '';
+        settings.racers.push({ id, name });
+        saveSettings();
+        document.getElementById('racer-id-input').value = '';
+        document.getElementById('racer-name-input').value = '';
+        renderRacersList();
+        renderRacerQRGrid();
+        showToast(`${name} added`);
     }
 
-    function renderSavedMarkers() {
+    function removeRacer(id) {
+        settings.racers = settings.racers.filter(r => r.id !== id);
+        saveSettings();
+        renderRacersList();
+        renderRacerQRGrid();
+    }
+
+    function renderRacersList() {
+        const list = document.getElementById('racer-list');
+        const countEl = document.getElementById('racer-count');
+        countEl.textContent = `(${settings.racers.length})`;
+
+        if (!settings.racers.length) {
+            list.innerHTML = '<div class="lap-empty">No racers yet — add at least one before race day.</div>';
+            return;
+        }
+
+        list.innerHTML = settings.racers.map(r => `
+            <div class="racer-row">
+                <div class="racer-id-badge">${escapeHtml(r.id)}</div>
+                <div>
+                    <div class="car-name">${escapeHtml(r.name)}</div>
+                    <div class="car-meta">QR scans as “${escapeHtml(r.id)}”</div>
+                </div>
+                <div class="racer-actions">
+                    <button type="button" class="btn btn-ghost btn-sm" data-qr-id="${escapeHtml(r.id)}" title="Preview QR">QR</button>
+                    <button type="button" class="btn btn-danger btn-sm" data-remove-id="${escapeHtml(r.id)}" title="Remove">×</button>
+                </div>
+            </div>`).join('');
+
+        list.querySelectorAll('[data-qr-id]').forEach(btn => {
+            btn.addEventListener('click', () => previewQR(btn.getAttribute('data-qr-id')));
+        });
+        list.querySelectorAll('[data-remove-id]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const id = btn.getAttribute('data-remove-id');
+                if (confirm(`Remove racer ${id}?`)) removeRacer(id);
+            });
+        });
+    }
+
+    function previewQR(id) {
+        const racer = settings.racers.find(r => r.id === id);
+        const container = document.getElementById('qrcode-container');
+        const output = document.getElementById('qrcode-output');
+        const label = document.getElementById('qrcode-preview-label');
+        output.innerHTML = '';
+        container.classList.remove('hidden');
+        label.textContent = racer ? `${racer.name} — QR ID “${racer.id}”` : `QR ID “${id}”`;
+
+        new QRCode(output, {
+            text: id,
+            width: 280,
+            height: 280,
+            colorDark: '#000000',
+            colorLight: '#ffffff',
+            correctLevel: QRCode.CorrectLevel.L
+        });
+        container.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    function renderRacerQRGrid() {
         const list = document.getElementById('qr-saved-list');
         list.innerHTML = '';
-        settings.savedMarkers.forEach(name => {
+        settings.racers.forEach(r => {
             const card = document.createElement('div');
             card.className = 'qr-card';
             const mount = document.createElement('div');
             card.appendChild(mount);
             const label = document.createElement('div');
             label.className = 'qr-card-label';
-            label.textContent = name;
+            label.textContent = `${r.id} · ${r.name}`;
             card.appendChild(label);
             list.appendChild(card);
             new QRCode(mount, {
-                text: name,
-                width: 100,
-                height: 100,
+                text: r.id,
+                width: 140,
+                height: 140,
                 colorDark: '#000000',
                 colorLight: '#ffffff',
-                correctLevel: QRCode.CorrectLevel.H
+                correctLevel: QRCode.CorrectLevel.L
             });
         });
     }
@@ -1325,11 +1492,18 @@
         if (confirm('Leave session?')) teardownSession(true);
     });
     document.getElementById('btn-export').addEventListener('click', exportResults);
-    document.getElementById('btn-generate-qr').addEventListener('click', generateQR);
+    document.getElementById('btn-add-racer').addEventListener('click', addRacer);
+    document.getElementById('racer-name-input').addEventListener('keydown', e => {
+        if (e.key === 'Enter') addRacer();
+    });
+    document.getElementById('racer-id-input').addEventListener('keydown', e => {
+        if (e.key === 'Enter') document.getElementById('racer-name-input').focus();
+    });
 
     document.getElementById('btn-reset-settings').addEventListener('click', () => {
-        if (confirm('Reset all settings to defaults?')) {
-            settings = { ...DEFAULTS };
+        if (confirm('Reset timing and audio settings to defaults? (Racers are kept)')) {
+            const racers = settings.racers;
+            settings = { ...DEFAULTS, racers };
             saveSettings();
             applySettingsToUI();
             showToast('Settings reset');
