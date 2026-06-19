@@ -872,8 +872,13 @@
 
     // --- Car / race state ---
 
+    function normalizeCarId(id) {
+        return String(id || '').trim();
+    }
+
     function getOrCreateCar(carId) {
-        const id = carId.trim();
+        const id = normalizeCarId(carId);
+        if (!id) return null;
         if (!cars[id]) {
             cars[id] = {
                 id,
@@ -978,9 +983,13 @@
     function startRunningClock(fromTime) {
         clearInterval(clockInterval);
         const anchor = fromTime || Date.now();
+        const tick = () => {
+            document.getElementById('running-clock').textContent = formatTime(Date.now() - anchor);
+        };
+        tick();
         clockInterval = setInterval(() => {
             if (raceState !== 'racing') return;
-            document.getElementById('running-clock').textContent = formatTime(Date.now() - anchor);
+            tick();
         }, 30);
     }
 
@@ -995,7 +1004,7 @@
         if (raceState !== 'racing') return;
 
         const car = getOrCreateCar(carId);
-        if (car.finished) return;
+        if (!car || car.finished) return;
 
         const now = Date.now();
         const minLapMs = settings.minLapSec * 1000;
@@ -1003,15 +1012,8 @@
 
         if (car.lastCrossing && now - car.lastCrossing < debounceMs) return;
 
-        if (car.lapCount === 0) {
-            car.lastCrossing = now;
-            showToast(`${car.name} on track`);
-            speak(`${car.name} on track`);
-            updateRaceUI();
-            return;
-        }
-
-        const lapTime = now - car.lastCrossing;
+        const lapStart = car.lastCrossing || raceStartTime || now;
+        const lapTime = now - lapStart;
         if (lapTime < minLapMs) return;
 
         car.lastCrossing = now;
@@ -1039,7 +1041,7 @@
         const position = getSortedCars().findIndex(c => c.id === car.id) + 1;
 
         let announcement = `${car.name}. Lap ${car.lapCount}. ${formatSpokenTime(lapTime)}.`;
-        if (position === 1 && car.lapCount > 1) announcement += ' Leader.';
+        if (position === 1) announcement += ' Leader.';
         else if (position > 1) announcement += ` ${ordinal(position)} place.`;
         speak(announcement);
 
@@ -1338,7 +1340,8 @@
                     });
 
                     if (code && code.data) {
-                        const carId = code.data.trim();
+                        const carId = normalizeCarId(code.data);
+                        if (!carId) return;
                         const now = Date.now();
                         const debounceMs = settings.debounceSec * 1000;
 
