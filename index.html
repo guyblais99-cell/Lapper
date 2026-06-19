@@ -2,267 +2,1194 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#0f1115">
+    <meta name="description" content="ApexTrack Live — RC lap timer with QR gate detection">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>ApexTrack Live // RC Lap Timer</title>
-    
-    <!-- External Dependencies for QR Reading, P2P Networking, and QR Generation -->
+
     <script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.2/peerjs.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-    
+
     <style>
         :root {
             --bg-dark: #0f1115;
             --panel-bg: #181b22;
+            --panel-elevated: #1e222b;
             --accent-green: #00ff88;
+            --accent-green-dim: #00cc6a;
             --accent-red: #ff3e3e;
+            --accent-amber: #ffb020;
+            --accent-blue: #4dabf7;
             --text-main: #f0f4f8;
             --text-muted: #6c7a89;
+            --border: #252a35;
+            --radius: 12px;
+            --safe-bottom: env(safe-area-inset-bottom, 0px);
         }
 
-        * { box-sizing: border-box; margin: 0; padding: 0; font-family: '-apple-system', BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-        body { background-color: var(--bg-dark); color: var(--text-main); padding: 20px; display: flex; flex-direction: column; align-items: center; gap: 20px; }
-        
-        .container { width: 100%; max-width: 600px; background: var(--panel-bg); padding: 25px; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); border: 1px solid #252a35; }
-        h1, h3 { font-size: 1.5rem; text-transform: uppercase; letter-spacing: 2px; margin-bottom: 20px; color: var(--accent-green); text-align: center; border-bottom: 2px solid #252a35; padding-bottom: 10px; }
-        h3 { font-size: 1.1rem; border-bottom: 1px solid #252a35; padding-bottom: 6px; margin-bottom: 15px; text-align: left; }
-        
-        .setup-pane { display: flex; flex-direction: column; gap: 15px; }
-        label { font-size: 0.85rem; text-transform: uppercase; color: var(--text-muted); letter-spacing: 1px; }
-        input { background: #0f1115; border: 1px solid #3a4252; padding: 12px; border-radius: 8px; color: white; font-size: 1rem; width: 100%; text-align: center; }
-        input:focus { border-color: var(--accent-green); outline: none; }
-        
-        .btn { background: #252a35; color: white; border: none; padding: 14px; border-radius: 8px; font-weight: bold; cursor: pointer; transition: all 0.2s ease; text-transform: uppercase; font-size: 0.9rem; letter-spacing: 1px; width: 100%; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-dark);
+            color: var(--text-main);
+            min-height: 100dvh;
+            padding: 16px 16px calc(16px + var(--safe-bottom));
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .app-header {
+            width: 100%;
+            max-width: 640px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+        .brand { display: flex; flex-direction: column; gap: 2px; }
+        .brand-title {
+            font-size: 1.25rem;
+            font-weight: 800;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            color: var(--accent-green);
+        }
+        .brand-sub { font-size: 0.7rem; color: var(--text-muted); letter-spacing: 1px; text-transform: uppercase; }
+
+        .icon-btn {
+            background: var(--panel-bg);
+            border: 1px solid var(--border);
+            color: var(--text-main);
+            width: 42px;
+            height: 42px;
+            border-radius: 10px;
+            cursor: pointer;
+            font-size: 1.1rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: border-color 0.2s, transform 0.15s;
+        }
+        .icon-btn:hover { border-color: var(--accent-green); transform: translateY(-1px); }
+
+        .container {
+            width: 100%;
+            max-width: 640px;
+            background: var(--panel-bg);
+            padding: 20px;
+            border-radius: 16px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.45);
+            border: 1px solid var(--border);
+        }
+
+        h2 {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: var(--text-muted);
+            margin-bottom: 14px;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 6px;
+            margin-bottom: 18px;
+            background: var(--bg-dark);
+            padding: 4px;
+            border-radius: 10px;
+        }
+        .tab {
+            flex: 1;
+            padding: 10px 8px;
+            border: none;
+            background: transparent;
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .tab.active { background: var(--panel-elevated); color: var(--accent-green); }
+
+        .tab-panel { display: none; flex-direction: column; gap: 14px; }
+        .tab-panel.active { display: flex; }
+
+        label {
+            display: block;
+            font-size: 0.72rem;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            letter-spacing: 0.8px;
+            margin-bottom: 6px;
+        }
+        .field-hint { font-size: 0.68rem; color: var(--text-muted); margin-top: 4px; line-height: 1.4; }
+
+        input[type="text"], input[type="number"], select {
+            width: 100%;
+            background: var(--bg-dark);
+            border: 1px solid #3a4252;
+            padding: 12px;
+            border-radius: 8px;
+            color: white;
+            font-size: 1rem;
+        }
+        input:focus, select:focus { border-color: var(--accent-green); outline: none; }
+
+        .toggle-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 12px 14px;
+            background: var(--bg-dark);
+            border-radius: 10px;
+            border: 1px solid var(--border);
+        }
+        .toggle-row span { font-size: 0.85rem; }
+        .toggle-row small { display: block; font-size: 0.68rem; color: var(--text-muted); margin-top: 2px; }
+
+        .switch { position: relative; width: 46px; height: 26px; flex-shrink: 0; }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider {
+            position: absolute; inset: 0;
+            background: #3a4252;
+            border-radius: 26px;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+        .slider:before {
+            content: "";
+            position: absolute;
+            height: 20px; width: 20px;
+            left: 3px; bottom: 3px;
+            background: white;
+            border-radius: 50%;
+            transition: 0.2s;
+        }
+        .switch input:checked + .slider { background: var(--accent-green-dim); }
+        .switch input:checked + .slider:before { transform: translateX(20px); }
+
+        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+        .btn {
+            background: #252a35;
+            color: white;
+            border: none;
+            padding: 14px;
+            border-radius: 10px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-transform: uppercase;
+            font-size: 0.82rem;
+            letter-spacing: 0.8px;
+            width: 100%;
+        }
+        .btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none !important; }
+        .btn:not(:disabled):hover { transform: translateY(-2px); opacity: 0.95; }
+        .btn-primary { background: linear-gradient(135deg, #11998e, #38ef7d); color: #0f1115; }
         .btn-sensor { background: linear-gradient(135deg, #2c3e50, #34495e); border: 1px solid #4e6a85; }
-        .btn-monitor { background: linear-gradient(135deg, #11998e, #38ef7d); color: #0f1115; }
-        .btn-generator { background: linear-gradient(135deg, #4a148c, #7b1fa2); border: 1px solid #9c27b0; margin-top: 5px; }
-        .btn:hover { transform: translateY(-2px); opacity: 0.95; }
+        .btn-danger { background: linear-gradient(135deg, #8b1a1a, #ff3e3e); }
+        .btn-ghost { background: transparent; border: 1px solid var(--border); }
+        .btn-sm { padding: 10px; font-size: 0.72rem; }
 
         .hidden { display: none !important; }
-        .status-bar { background: #0f1115; padding: 10px; border-radius: 8px; text-align: center; font-size: 0.9rem; margin-top: 15px; border-left: 4px solid var(--text-muted); }
+
+        .status-bar {
+            background: var(--bg-dark);
+            padding: 10px 14px;
+            border-radius: 8px;
+            font-size: 0.82rem;
+            border-left: 4px solid var(--text-muted);
+            line-height: 1.4;
+        }
         .status-connected { border-left-color: var(--accent-green); color: var(--accent-green); }
+        .status-racing { border-left-color: var(--accent-amber); color: var(--accent-amber); }
+        .status-finished { border-left-color: var(--accent-blue); color: var(--accent-blue); }
 
-        /* Camera UI Layout */
+        /* Monitor */
+        .race-banner {
+            text-align: center;
+            padding: 14px;
+            background: var(--bg-dark);
+            border-radius: var(--radius);
+            border: 1px solid var(--border);
+            margin-bottom: 16px;
+        }
+        .race-state-label {
+            font-size: 0.68rem;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: var(--text-muted);
+            margin-bottom: 6px;
+        }
+        .race-state-label.racing { color: var(--accent-amber); }
+        .race-state-label.finished { color: var(--accent-blue); }
+
+        .live-timer {
+            font-size: clamp(2.5rem, 12vw, 4rem);
+            font-family: 'SF Mono', 'Consolas', monospace;
+            font-weight: 700;
+            letter-spacing: -1px;
+        }
+
+        .race-meta {
+            display: flex;
+            justify-content: center;
+            gap: 16px;
+            margin-top: 8px;
+            font-size: 0.78rem;
+            color: var(--text-muted);
+        }
+        .race-meta strong { color: var(--text-main); }
+
+        .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 16px; }
+        .stat-card {
+            background: var(--bg-dark);
+            padding: 12px 8px;
+            border-radius: 10px;
+            text-align: center;
+            border: 1px solid var(--border);
+        }
+        .stat-card label { margin-bottom: 4px; font-size: 0.62rem; }
+        .stat-val {
+            font-size: 1.1rem;
+            font-family: monospace;
+            font-weight: 700;
+            color: var(--accent-green);
+        }
+
+        .leaderboard { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+        .leader-row {
+            display: grid;
+            grid-template-columns: 28px 1fr auto;
+            gap: 10px;
+            align-items: center;
+            padding: 10px 12px;
+            background: var(--bg-dark);
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            font-size: 0.85rem;
+        }
+        .leader-row.leader { border-color: var(--accent-green); box-shadow: 0 0 12px rgba(0,255,136,0.12); }
+        .leader-row.finished { opacity: 0.75; }
+        .pos-badge {
+            width: 28px; height: 28px;
+            border-radius: 50%;
+            background: var(--panel-elevated);
+            display: flex; align-items: center; justify-content: center;
+            font-weight: 800; font-size: 0.75rem;
+        }
+        .pos-badge.p1 { background: #ffd700; color: #1a1a1a; }
+        .pos-badge.p2 { background: #c0c0c0; color: #1a1a1a; }
+        .pos-badge.p3 { background: #cd7f32; color: #fff; }
+        .car-name { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .car-meta { font-size: 0.68rem; color: var(--text-muted); margin-top: 2px; font-family: monospace; }
+        .car-laps { text-align: right; font-family: monospace; font-weight: 700; color: var(--accent-green); }
+        .car-best { font-size: 0.68rem; color: var(--text-muted); font-weight: 400; }
+
+        .lap-log {
+            background: var(--bg-dark);
+            border-radius: 10px;
+            padding: 8px;
+            max-height: 220px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .lap-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 12px;
+            background: var(--panel-bg);
+            border-radius: 8px;
+            font-family: monospace;
+            font-size: 0.82rem;
+            gap: 8px;
+        }
+        .lap-row.pb { border: 1px solid var(--accent-green); color: var(--accent-green); }
+        .lap-car { font-weight: 700; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .lap-empty { color: var(--text-muted); text-align: center; padding: 24px; font-size: 0.85rem; }
+
+        .action-bar { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
+
+        /* Camera */
         #camera-view { text-align: center; }
-        video { width: 100%; border-radius: 12px; background: #000; transform: scaleX(1); margin-top: 15px; border: 2px solid #3a4252; }
-        
-        /* Monitor UI Layout */
-        #monitor-view { display: flex; flex-direction: column; gap: 20px; }
-        .live-timer { font-size: 4rem; font-family: monospace; text-align: center; color: var(--text-main); font-weight: bold; text-shadow: 0 0 10px rgba(255,255,255,0.1); margin: 10px 0; }
-        
-        .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
-        .stat-card { background: #0f1115; padding: 15px; border-radius: 10px; text-align: center; border: 1px solid #252a35; }
-        .stat-val { font-size: 1.8rem; font-family: monospace; font-weight: bold; color: var(--accent-green); margin-top: 5px; }
+        video {
+            width: 100%;
+            border-radius: var(--radius);
+            background: #000;
+            margin-top: 10px;
+            border: 2px solid #3a4252;
+        }
+        video.mirror { transform: scaleX(-1); }
+        .sensor-overlay {
+            margin-top: 12px;
+            padding: 12px;
+            background: var(--bg-dark);
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            text-align: left;
+        }
+        .last-scan { font-size: 1.1rem; font-weight: 700; color: var(--accent-green); margin-top: 4px; }
 
-        .history-list { background: #0f1115; border-radius: 10px; padding: 10px; max-height: 200px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
-        .lap-row { display: flex; justify-content: space-between; padding: 8px 12px; background: var(--panel-bg); border-radius: 6px; font-family: monospace; font-size: 0.95rem; }
-        .lap-row.personal-best { border: 1px solid var(--accent-green); color: var(--accent-green); }
-
-        /* Generator Output Container */
+        /* QR Generator */
         #qrcode-output { background: #fff; padding: 15px; border-radius: 8px; display: inline-block; }
-        #qrcode-container { text-align: center; margin-top: 15px; }
+        #qrcode-container { text-align: center; margin-top: 12px; }
+        .qr-list { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; margin-top: 12px; }
+        .qr-card {
+            background: #fff;
+            padding: 10px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        .qr-card-label { font-size: 0.72rem; color: #333; font-weight: 700; margin-top: 6px; max-width: 120px; word-break: break-word; }
+
+        /* Modal */
+        .modal-backdrop {
+            position: fixed; inset: 0;
+            background: rgba(0,0,0,0.75);
+            z-index: 200;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .modal {
+            background: var(--panel-bg);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 24px;
+            max-width: 360px;
+            width: 100%;
+            text-align: center;
+        }
+        .modal h3 { font-size: 1.4rem; margin-bottom: 8px; color: var(--accent-green); }
+        .modal p { color: var(--text-muted); font-size: 0.9rem; margin-bottom: 16px; }
+        .countdown-num {
+            font-size: 5rem;
+            font-family: monospace;
+            font-weight: 800;
+            color: var(--accent-amber);
+            line-height: 1;
+            margin: 10px 0 20px;
+        }
+
+        .toast {
+            position: fixed;
+            bottom: calc(20px + var(--safe-bottom));
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--panel-elevated);
+            border: 1px solid var(--accent-green);
+            color: var(--text-main);
+            padding: 10px 18px;
+            border-radius: 999px;
+            font-size: 0.82rem;
+            z-index: 300;
+            animation: toast-in 0.25s ease;
+        }
+        @keyframes toast-in {
+            from { opacity: 0; transform: translateX(-50%) translateY(12px); }
+            to { opacity: 1; transform: translateX(-50%) translateY(0); }
+        }
     </style>
 </head>
 <body>
 
-<!-- MAIN TRACK APPLICATION CONTAINER -->
-<div class="container">
-    <h1>ApexTrack // Live</h1>
-    
-    <!-- 1. INITIAL SETUP CONFIGURATION SCREEN -->
-    <div id="setup-screen" class="setup-pane">
+<header class="app-header">
+    <div class="brand">
+        <div class="brand-title">ApexTrack</div>
+        <div class="brand-sub">Live RC Lap Timer</div>
+    </div>
+    <button type="button" class="icon-btn hidden" id="btn-back" title="Exit session" aria-label="Exit session">←</button>
+</header>
+
+<!-- SETUP / HOME -->
+<div class="container" id="home-panel">
+    <div class="tabs" role="tablist">
+        <button type="button" class="tab active" data-tab="race" role="tab">Race</button>
+        <button type="button" class="tab" data-tab="settings" role="tab">Settings</button>
+        <button type="button" class="tab" data-tab="markers" role="tab">Markers</button>
+    </div>
+
+    <!-- Race tab -->
+    <div class="tab-panel active" id="tab-race" role="tabpanel">
         <div>
-            <label>Set Room / Session ID</label>
-            <input type="text" id="session-id-input" value="rc-race-77">
+            <label for="session-id-input">Room / Session ID</label>
+            <input type="text" id="session-id-input" autocomplete="off" placeholder="e.g. club-race-saturday">
+            <p class="field-hint">Monitor and camera must use the same room name.</p>
         </div>
-        <button class="btn btn-monitor" onclick="initDevice('monitor')">Start as Monitor (Receiver)</button>
-        <button class="btn btn-sensor" onclick="initDevice('sensor')">Start as Camera (Sensor)</button>
+        <div class="grid-2">
+            <div>
+                <label for="race-laps-input">Laps to win</label>
+                <input type="number" id="race-laps-input" min="1" max="999" value="5">
+            </div>
+            <div>
+                <label for="race-name-input">Race name</label>
+                <input type="text" id="race-name-input" autocomplete="off" placeholder="Heat 1">
+            </div>
+        </div>
+        <button type="button" class="btn btn-primary" id="btn-start-monitor">Start as Monitor</button>
+        <button type="button" class="btn btn-sensor" id="btn-start-sensor">Start as Camera Gate</button>
     </div>
 
-    <!-- CONNECTION/SYSTEM STATUS TEXT -->
-    <div id="status-display" class="status-bar hidden">Initializing Network Layer...</div>
+    <!-- Settings tab -->
+    <div class="tab-panel" id="tab-settings" role="tabpanel">
+        <div class="grid-2">
+            <div>
+                <label for="setting-debounce">Gate debounce (sec)</label>
+                <input type="number" id="setting-debounce" min="1" max="30" step="0.5" value="2">
+                <p class="field-hint">Min time between triggers for the same car.</p>
+            </div>
+            <div>
+                <label for="setting-minlap">Min lap time (sec)</label>
+                <input type="number" id="setting-minlap" min="1" max="120" step="0.5" value="3">
+                <p class="field-hint">Ignores laps shorter than this.</p>
+            </div>
+        </div>
+        <div>
+            <label for="setting-countdown">Race countdown (sec)</label>
+            <input type="number" id="setting-countdown" min="0" max="10" value="3">
+        </div>
 
-    <!-- 2. TRACKSIDE CAMERA SENSOR INTERFACE -->
-    <div id="camera-view" class="hidden">
-        <label>Live Detection Matrix</label>
-        <video id="video-feed" playsinline></video>
-        <canvas id="hidden-canvas" class="hidden"></canvas>
+        <div class="toggle-row">
+            <div>
+                <span>Voice announcements</span>
+                <small>Speak car name, lap time, and position</small>
+            </div>
+            <label class="switch"><input type="checkbox" id="setting-tts" checked><span class="slider"></span></label>
+        </div>
+        <div class="toggle-row">
+            <div>
+                <span>Lap bell sound</span>
+                <small>Play a chime on each completed lap</small>
+            </div>
+            <label class="switch"><input type="checkbox" id="setting-sound" checked><span class="slider"></span></label>
+        </div>
+        <div class="toggle-row">
+            <div>
+                <span>Mirror camera</span>
+                <small>Flip sensor preview horizontally</small>
+            </div>
+            <label class="switch"><input type="checkbox" id="setting-mirror" checked><span class="slider"></span></label>
+        </div>
+        <div class="toggle-row">
+            <div>
+                <span>Haptic feedback</span>
+                <small>Vibrate on lap trigger (supported phones)</small>
+            </div>
+            <label class="switch"><input type="checkbox" id="setting-haptic" checked><span class="slider"></span></label>
+        </div>
+
+        <button type="button" class="btn btn-ghost btn-sm" id="btn-reset-settings">Reset settings to defaults</button>
     </div>
 
-    <!-- 3. PIT WALL MONITOR/RECEIVER DASHBOARD -->
+    <!-- Markers tab -->
+    <div class="tab-panel" id="tab-markers" role="tabpanel">
+        <div>
+            <label for="qr-text">Car name / ID</label>
+            <input type="text" id="qr-text" autocomplete="off" placeholder="e.g. Buggy 1">
+        </div>
+        <button type="button" class="btn btn-ghost" id="btn-generate-qr">Generate marker</button>
+        <div id="qrcode-container" class="hidden">
+            <div id="qrcode-output"></div>
+        </div>
+        <div class="qr-list" id="qr-saved-list"></div>
+        <p class="field-hint" style="text-align:center;">Print markers and tape them to each car. The camera reads the QR at the finish line.</p>
+    </div>
+</div>
+
+<!-- SESSION PANEL (monitor or sensor) -->
+<div class="container hidden" id="session-panel">
+    <div id="status-display" class="status-bar">Connecting…</div>
+
+    <!-- MONITOR -->
     <div id="monitor-view" class="hidden">
-        <div class="live-timer" id="running-clock">00:00.00</div>
-        
+        <div class="race-banner">
+            <div class="race-state-label" id="race-state-label">Ready</div>
+            <div class="live-timer" id="running-clock">00:00.00</div>
+            <div class="race-meta">
+                <span>Target: <strong id="meta-laps">5</strong> laps</span>
+                <span id="meta-race-name"></span>
+            </div>
+        </div>
+
         <div class="stats-grid">
             <div class="stat-card">
-                <label>Last Lap</label>
-                <div class="stat-val" id="val-last">--:--.--</div>
+                <label>Cars</label>
+                <div class="stat-val" id="stat-cars">0</div>
             </div>
             <div class="stat-card">
-                <label>Best Lap</label>
-                <div class="stat-val" id="val-best" style="color: var(--accent-green);">--:--.--</div>
+                <label>Leader</label>
+                <div class="stat-val" id="stat-leader" style="font-size:0.85rem;">—</div>
+            </div>
+            <div class="stat-card">
+                <label>Total laps</label>
+                <div class="stat-val" id="stat-total-laps">0</div>
             </div>
         </div>
 
-        <div>
-            <label style="display:block; margin-bottom: 8px;">Lap Log Matrix</label>
-            <div class="history-list" id="lap-log">
-                <div style="color: var(--text-muted); text-align: center; padding: 20px;">Awaiting first gate trigger...</div>
-            </div>
+        <h2>Leaderboard</h2>
+        <div class="leaderboard" id="leaderboard">
+            <div class="lap-empty">Waiting for first crossing…</div>
+        </div>
+
+        <h2>Live feed</h2>
+        <div class="lap-log" id="lap-log">
+            <div class="lap-empty">Laps appear here as cars cross the gate.</div>
+        </div>
+
+        <div class="action-bar">
+            <button type="button" class="btn btn-primary" id="btn-race-start" disabled>Start race</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="btn-export">Export</button>
+        </div>
+        <div class="action-bar">
+            <button type="button" class="btn btn-ghost btn-sm" id="btn-reset-race">Reset race</button>
+            <button type="button" class="btn btn-danger btn-sm" id="btn-end-session">End session</button>
+        </div>
+    </div>
+
+    <!-- SENSOR -->
+    <div id="camera-view" class="hidden">
+        <label>Finish-line camera</label>
+        <video id="video-feed" playsinline muted></video>
+        <canvas id="hidden-canvas" class="hidden"></canvas>
+        <div class="sensor-overlay">
+            <label>Last detection</label>
+            <div class="last-scan" id="last-scan">—</div>
+            <p class="field-hint" style="margin-top:8px;">Aim at QR markers as cars cross the line. Debounce prevents double reads.</p>
         </div>
     </div>
 </div>
 
-<!-- INTEGRATED QR MARKER GENERATOR UTILITY -->
-<div class="container" id="generator-panel">
-    <h3>Car Marker Generator</h3>
-    <div class="setup-pane">
-        <div>
-            <label>Enter Car Name / ID</label>
-            <input type="text" id="qr-text" placeholder="e.g., Buggy 1" style="margin-top: 5px;">
-        </div>
-        <button class="btn btn-generator" onclick="generateQR()">Generate Live Marker</button>
-        <div id="qrcode-container" class="hidden">
-            <div id="qrcode-output"></div>
-        </div>
+<!-- Countdown modal -->
+<div class="modal-backdrop hidden" id="countdown-modal" aria-hidden="true">
+    <div class="modal">
+        <h3>Get ready</h3>
+        <p id="countdown-message">Race starting…</p>
+        <div class="countdown-num" id="countdown-num">3</div>
     </div>
 </div>
 
 <script>
+(function () {
+    'use strict';
+
+    const STORAGE_KEY = 'apextrack-settings-v1';
+    const DEFAULTS = {
+        sessionId: 'rc-race-77',
+        raceName: '',
+        totalLaps: 5,
+        debounceSec: 2,
+        minLapSec: 3,
+        countdownSec: 3,
+        ttsEnabled: true,
+        soundEnabled: true,
+        mirrorCamera: true,
+        hapticEnabled: true,
+        savedMarkers: []
+    };
+
+    let settings = loadSettings();
     let peer = null;
     let conn = null;
     let myRole = '';
     let sessionId = '';
-    
-    // Timing states (Kept on Receiver side)
-    let lastLapTime = 0;
-    let bestLapTime = Infinity;
-    let lapCount = 0;
+
+    let raceState = 'ready'; // ready | countdown | racing | finished
+    let raceStartTime = null;
     let clockInterval = null;
+
+    /** @type {Record<string, CarState>} */
+    const cars = {};
+    /** @type {Array<LapEntry>} */
+    const lapHistory = [];
+    let globalLapSeq = 0;
+
+    /** @type {Record<string, number>} sensor-side cooldown */
+    const scanCooldown = {};
+
+    // --- Settings persistence ---
+
+    function loadSettings() {
+        try {
+            const raw = localStorage.getItem(STORAGE_KEY);
+            if (raw) return { ...DEFAULTS, ...JSON.parse(raw) };
+        } catch (_) { /* ignore */ }
+        return { ...DEFAULTS };
+    }
+
+    function saveSettings() {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+    }
+
+    function readSettingsFromUI() {
+        settings.sessionId = document.getElementById('session-id-input').value.trim().toLowerCase().replace(/\s+/g, '-');
+        settings.raceName = document.getElementById('race-name-input').value.trim();
+        settings.totalLaps = clamp(parseInt(document.getElementById('race-laps-input').value, 10) || 5, 1, 999);
+        settings.debounceSec = clamp(parseFloat(document.getElementById('setting-debounce').value) || 2, 1, 30);
+        settings.minLapSec = clamp(parseFloat(document.getElementById('setting-minlap').value) || 3, 1, 120);
+        settings.countdownSec = clamp(parseInt(document.getElementById('setting-countdown').value, 10) || 0, 0, 10);
+        settings.ttsEnabled = document.getElementById('setting-tts').checked;
+        settings.soundEnabled = document.getElementById('setting-sound').checked;
+        settings.mirrorCamera = document.getElementById('setting-mirror').checked;
+        settings.hapticEnabled = document.getElementById('setting-haptic').checked;
+        saveSettings();
+    }
+
+    function applySettingsToUI() {
+        document.getElementById('session-id-input').value = settings.sessionId;
+        document.getElementById('race-name-input').value = settings.raceName;
+        document.getElementById('race-laps-input').value = settings.totalLaps;
+        document.getElementById('setting-debounce').value = settings.debounceSec;
+        document.getElementById('setting-minlap').value = settings.minLapSec;
+        document.getElementById('setting-countdown').value = settings.countdownSec;
+        document.getElementById('setting-tts').checked = settings.ttsEnabled;
+        document.getElementById('setting-sound').checked = settings.soundEnabled;
+        document.getElementById('setting-mirror').checked = settings.mirrorCamera;
+        document.getElementById('setting-haptic').checked = settings.hapticEnabled;
+        renderSavedMarkers();
+    }
+
+    function clamp(n, min, max) {
+        return Math.min(max, Math.max(min, n));
+    }
+
+    // --- Tabs ---
+
+    document.querySelectorAll('.tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+            tab.classList.add('active');
+            document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+        });
+    });
+
+    // --- UI helpers ---
 
     const statusDisplay = document.getElementById('status-display');
 
-    function updateStatus(text, isConnected = false) {
-        statusDisplay.classList.remove('hidden');
+    function updateStatus(text, kind) {
         statusDisplay.textContent = text;
-        if (isConnected) statusDisplay.classList.add('status-connected');
-        else statusDisplay.classList.remove('status-connected');
+        statusDisplay.className = 'status-bar';
+        if (kind === 'connected') statusDisplay.classList.add('status-connected');
+        if (kind === 'racing') statusDisplay.classList.add('status-racing');
+        if (kind === 'finished') statusDisplay.classList.add('status-finished');
     }
 
+    function showToast(msg) {
+        const el = document.createElement('div');
+        el.className = 'toast';
+        el.textContent = msg;
+        document.body.appendChild(el);
+        setTimeout(() => el.remove(), 2800);
+    }
+
+    function formatTime(ms) {
+        if (!Number.isFinite(ms) || ms < 0) return '--:--.--';
+        const minutes = Math.floor(ms / 60000);
+        const seconds = Math.floor((ms % 60000) / 1000);
+        const hundredths = Math.floor((ms % 1000) / 10);
+        return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(hundredths).padStart(2, '0')}`;
+    }
+
+    function formatSpokenTime(ms) {
+        const seconds = Math.floor((ms % 60000) / 1000);
+        const tenths = Math.floor((ms % 1000) / 100);
+        if (seconds === 0) return `${tenths} tenths`;
+        return `${seconds} point ${tenths}`;
+    }
+
+    function ordinal(n) {
+        const s = ['th', 'st', 'nd', 'rd'];
+        const v = n % 100;
+        return n + (s[(v - 20) % 10] || s[v] || s[0]);
+    }
+
+    // --- Audio ---
+
+    let audioCtx = null;
+
+    function getAudioCtx() {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        return audioCtx;
+    }
+
+    function playLapBell() {
+        if (!settings.soundEnabled) return;
+        try {
+            const ctx = getAudioCtx();
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.frequency.setValueAtTime(880, ctx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.15);
+            gain.gain.setValueAtTime(0.25, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
+            osc.start(ctx.currentTime);
+            osc.stop(ctx.currentTime + 0.35);
+        } catch (_) { /* ignore */ }
+    }
+
+    function playFinishFanfare() {
+        if (!settings.soundEnabled) return;
+        try {
+            const ctx = getAudioCtx();
+            [523, 659, 784].forEach((freq, i) => {
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                const t = ctx.currentTime + i * 0.12;
+                osc.frequency.value = freq;
+                gain.gain.setValueAtTime(0.2, t);
+                gain.gain.exponentialRampToValueAtTime(0.01, t + 0.25);
+                osc.start(t);
+                osc.stop(t + 0.25);
+            });
+        } catch (_) { /* ignore */ }
+    }
+
+    let speechQueue = Promise.resolve();
+
+    function speak(text) {
+        if (!settings.ttsEnabled || !window.speechSynthesis) return;
+        speechQueue = speechQueue.then(() => new Promise(resolve => {
+            const u = new SpeechSynthesisUtterance(text);
+            u.rate = 1.05;
+            u.pitch = 1;
+            u.onend = resolve;
+            u.onerror = resolve;
+            window.speechSynthesis.speak(u);
+        }));
+    }
+
+    function haptic(ms) {
+        if (settings.hapticEnabled && navigator.vibrate) navigator.vibrate(ms || 40);
+    }
+
+    // --- Car / race state ---
+
+    function getOrCreateCar(carId) {
+        const id = carId.trim();
+        if (!cars[id]) {
+            cars[id] = {
+                id,
+                name: id,
+                lapCount: 0,
+                bestLap: Infinity,
+                lastCrossing: 0,
+                finished: false,
+                finishTime: null
+            };
+        }
+        return cars[id];
+    }
+
+    function getSortedCars() {
+        return Object.values(cars).sort((a, b) => {
+            if (b.lapCount !== a.lapCount) return b.lapCount - a.lapCount;
+            if (a.bestLap !== b.bestLap) return a.bestLap - b.bestLap;
+            return (a.finishTime || Infinity) - (b.finishTime || Infinity);
+        });
+    }
+
+    function getLeader() {
+        const sorted = getSortedCars();
+        return sorted[0] || null;
+    }
+
+    function updateRaceUI() {
+        document.getElementById('meta-laps').textContent = settings.totalLaps;
+        document.getElementById('meta-race-name').textContent = settings.raceName ? `• ${settings.raceName}` : '';
+
+        const stateLabel = document.getElementById('race-state-label');
+        stateLabel.textContent = raceState === 'ready' ? 'Ready' :
+            raceState === 'countdown' ? 'Starting…' :
+            raceState === 'racing' ? 'Racing' : 'Finished';
+        stateLabel.className = 'race-state-label' +
+            (raceState === 'racing' ? ' racing' : '') +
+            (raceState === 'finished' ? ' finished' : '');
+
+        const sorted = getSortedCars();
+        document.getElementById('stat-cars').textContent = sorted.length;
+        document.getElementById('stat-total-laps').textContent = sorted.reduce((s, c) => s + c.lapCount, 0);
+
+        const leader = getLeader();
+        document.getElementById('stat-leader').textContent = leader
+            ? `${leader.name} (${leader.lapCount}/${settings.totalLaps})`
+            : '—';
+
+        renderLeaderboard(sorted);
+    }
+
+    function renderLeaderboard(sorted) {
+        const board = document.getElementById('leaderboard');
+        if (!sorted.length) {
+            board.innerHTML = '<div class="lap-empty">Waiting for first crossing…</div>';
+            return;
+        }
+        board.innerHTML = sorted.map((car, i) => {
+            const pos = i + 1;
+            const posClass = pos <= 3 ? `p${pos}` : '';
+            const isLeader = pos === 1 && car.lapCount > 0;
+            return `
+                <div class="leader-row ${isLeader ? 'leader' : ''} ${car.finished ? 'finished' : ''}">
+                    <div class="pos-badge ${posClass}">${pos}</div>
+                    <div>
+                        <div class="car-name">${escapeHtml(car.name)}</div>
+                        <div class="car-meta">Best ${car.bestLap < Infinity ? formatTime(car.bestLap) : '—'}</div>
+                    </div>
+                    <div class="car-laps">
+                        ${car.lapCount}<span style="color:var(--text-muted);font-weight:400;">/${settings.totalLaps}</span>
+                        <div class="car-best">${car.finished ? 'FIN' : ''}</div>
+                    </div>
+                </div>`;
+        }).join('');
+    }
+
+    function escapeHtml(str) {
+        return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function appendLapLog(entry) {
+        const log = document.getElementById('lap-log');
+        if (log.querySelector('.lap-empty')) log.innerHTML = '';
+
+        const row = document.createElement('div');
+        row.className = 'lap-row' + (entry.isPB ? ' pb' : '');
+        row.innerHTML = `
+            <span class="lap-car">${escapeHtml(entry.carName)}</span>
+            <span>L${entry.lapNum}</span>
+            <span>${formatTime(entry.lapTime)}${entry.isPB ? ' ★' : ''}</span>`;
+        log.insertBefore(row, log.firstChild);
+    }
+
+    // --- Clock ---
+
+    function startRunningClock(fromTime) {
+        clearInterval(clockInterval);
+        const anchor = fromTime || Date.now();
+        clockInterval = setInterval(() => {
+            if (raceState !== 'racing') return;
+            document.getElementById('running-clock').textContent = formatTime(Date.now() - anchor);
+        }, 30);
+    }
+
+    function stopRunningClock() {
+        clearInterval(clockInterval);
+        clockInterval = null;
+    }
+
+    // --- Lap processing (monitor) ---
+
+    function processLapTrigger(carId) {
+        if (raceState !== 'racing') return;
+
+        const car = getOrCreateCar(carId);
+        if (car.finished) return;
+
+        const now = Date.now();
+        const minLapMs = settings.minLapSec * 1000;
+        const debounceMs = settings.debounceSec * 1000;
+
+        if (car.lastCrossing && now - car.lastCrossing < debounceMs) return;
+
+        if (car.lapCount === 0) {
+            car.lastCrossing = now;
+            showToast(`${car.name} on track`);
+            speak(`${car.name} on track`);
+            updateRaceUI();
+            return;
+        }
+
+        const lapTime = now - car.lastCrossing;
+        if (lapTime < minLapMs) return;
+
+        car.lastCrossing = now;
+        car.lapCount++;
+        globalLapSeq++;
+
+        const isPB = lapTime < car.bestLap;
+        if (isPB) car.bestLap = lapTime;
+
+        const entry = {
+            seq: globalLapSeq,
+            carId: car.id,
+            carName: car.name,
+            lapNum: car.lapCount,
+            lapTime,
+            isPB,
+            timestamp: now
+        };
+        lapHistory.unshift(entry);
+        appendLapLog(entry);
+
+        playLapBell();
+        haptic(50);
+
+        const position = getSortedCars().findIndex(c => c.id === car.id) + 1;
+
+        let announcement = `${car.name}. Lap ${car.lapCount}. ${formatSpokenTime(lapTime)}.`;
+        if (position === 1 && car.lapCount > 1) announcement += ' Leader.';
+        else if (position > 1) announcement += ` ${ordinal(position)} place.`;
+        speak(announcement);
+
+        if (car.lapCount >= settings.totalLaps) {
+            car.finished = true;
+            car.finishTime = now - (raceStartTime || now);
+            speak(`${car.name} wins the race!`);
+            playFinishFanfare();
+            haptic([80, 40, 80]);
+            endRace();
+        }
+
+        updateRaceUI();
+    }
+
+    function endRace() {
+        raceState = 'finished';
+        stopRunningClock();
+        updateStatus('Race complete', 'finished');
+
+        const winner = getLeader();
+        if (winner && winner.finished) {
+            speak(`Race over. Winner, ${winner.name}.`);
+            showToast(`Winner: ${winner.name}`);
+        } else {
+            speak('Race over.');
+        }
+
+        document.getElementById('btn-race-start').disabled = true;
+        updateRaceUI();
+    }
+
+    function resetRace() {
+        Object.keys(cars).forEach(k => delete cars[k]);
+        lapHistory.length = 0;
+        globalLapSeq = 0;
+        raceState = 'ready';
+        raceStartTime = null;
+        stopRunningClock();
+        document.getElementById('running-clock').textContent = '00:00.00';
+        document.getElementById('lap-log').innerHTML = '<div class="lap-empty">Laps appear here as cars cross the gate.</div>';
+        document.getElementById('btn-race-start').disabled = !conn || !conn.open;
+        updateStatus(conn && conn.open ? 'Camera connected — press Start race' : 'Waiting for camera…', conn && conn.open ? 'connected' : undefined);
+        updateRaceUI();
+    }
+
+    function startRaceCountdown() {
+        if (raceState !== 'ready' || !conn || !conn.open) return;
+
+        raceState = 'countdown';
+        const modal = document.getElementById('countdown-modal');
+        const numEl = document.getElementById('countdown-num');
+        let remaining = settings.countdownSec;
+
+        modal.classList.remove('hidden');
+        numEl.textContent = remaining || 'GO';
+
+        if (remaining === 0) {
+            beginRace();
+            modal.classList.add('hidden');
+            return;
+        }
+
+        speak('Race starting');
+
+        const tick = setInterval(() => {
+            remaining--;
+            if (remaining > 0) {
+                numEl.textContent = remaining;
+                speak(String(remaining));
+            } else {
+                clearInterval(tick);
+                numEl.textContent = 'GO';
+                speak('Go');
+                setTimeout(() => {
+                    modal.classList.add('hidden');
+                    beginRace();
+                }, 600);
+            }
+        }, 1000);
+    }
+
+    function beginRace() {
+        raceState = 'racing';
+        raceStartTime = Date.now();
+        startRunningClock(raceStartTime);
+        updateStatus('Racing live', 'racing');
+        document.getElementById('btn-race-start').disabled = true;
+
+        if (conn && conn.open) {
+            conn.send({ type: 'RACE_STATE', state: 'racing', settings: getRacePayload() });
+        }
+        updateRaceUI();
+    }
+
+    function getRacePayload() {
+        return {
+            totalLaps: settings.totalLaps,
+            raceName: settings.raceName,
+            debounceSec: settings.debounceSec,
+            minLapSec: settings.minLapSec
+        };
+    }
+
+    function exportResults() {
+        const lines = [
+            `ApexTrack — ${settings.raceName || sessionId}`,
+            `Laps to win: ${settings.totalLaps}`,
+            `Exported: ${new Date().toLocaleString()}`,
+            '',
+            'LEADERBOARD',
+            'Pos,Car,Laps,Best Lap,Status'
+        ];
+
+        getSortedCars().forEach((car, i) => {
+            lines.push([
+                i + 1,
+                `"${car.name.replace(/"/g, '""')}"`,
+                car.lapCount,
+                car.bestLap < Infinity ? formatTime(car.bestLap) : '',
+                car.finished ? 'Finished' : 'Racing'
+            ].join(','));
+        });
+
+        lines.push('', 'LAP LOG', 'Car,Lap,Time,PB');
+        [...lapHistory].reverse().forEach(e => {
+            lines.push([
+                `"${e.carName.replace(/"/g, '""')}"`,
+                e.lapNum,
+                formatTime(e.lapTime),
+                e.isPB ? 'Yes' : ''
+            ].join(','));
+        });
+
+        const text = lines.join('\n');
+        if (navigator.share) {
+            navigator.share({ title: 'ApexTrack Results', text }).catch(() => copyText(text));
+        } else {
+            copyText(text);
+        }
+    }
+
+    function copyText(text) {
+        navigator.clipboard.writeText(text).then(
+            () => showToast('Results copied to clipboard'),
+            () => showToast('Export ready — copy from console')
+        );
+        console.log(text);
+    }
+
+    // --- PeerJS ---
+
     function initDevice(role) {
+        readSettingsFromUI();
+        sessionId = settings.sessionId;
+        if (!sessionId) {
+            alert('Please enter a room / session ID.');
+            return;
+        }
+
         myRole = role;
-        sessionId = document.getElementById('session-id-input').value.trim().toLowerCase();
-        
-        if (!sessionId) return alert('Please enter a valid Room/Session ID');
-        
-        document.getElementById('setup-screen').classList.add('hidden');
-        document.getElementById('generator-panel').classList.add('hidden'); // Hide generator during active tracking sessions
-        updateStatus("Connecting to global signaling server...");
+        document.getElementById('home-panel').classList.add('hidden');
+        document.getElementById('session-panel').classList.remove('hidden');
+        document.getElementById('btn-back').classList.remove('hidden');
+        updateStatus('Connecting to network…');
 
         if (role === 'monitor') {
             peer = new Peer('apextrack-' + sessionId);
             setupMonitorEvents();
         } else {
-            peer = new Peer(); // Random ID for sensor phone
+            peer = new Peer();
             setupSensorEvents();
         }
     }
 
-    // ==========================================
-    // RECEIVER / MONITOR DASHBOARD LOGIC
-    // ==========================================
     function setupMonitorEvents() {
         peer.on('open', () => {
-            updateStatus(`Waiting for Camera Device... Room ID: ${sessionId}`);
             document.getElementById('monitor-view').classList.remove('hidden');
+            document.getElementById('meta-laps').textContent = settings.totalLaps;
+            document.getElementById('meta-race-name').textContent = settings.raceName ? `• ${settings.raceName}` : '';
+            updateStatus('Waiting for camera gate…');
+            updateRaceUI();
         });
 
         peer.on('connection', (connection) => {
+            if (conn && conn.open) conn.close();
             conn = connection;
-            updateStatus("CAMERA BOUND & SCANNING LIVE", true);
-            startRunningClock();
+            conn.on('open', () => {
+                updateStatus('Camera connected — press Start race', 'connected');
+                document.getElementById('btn-race-start').disabled = false;
+                conn.send({ type: 'RACE_STATE', state: raceState, settings: getRacePayload() });
+            });
             handleDataStreams();
         });
-        
+
         peer.on('error', (err) => {
-            if(err.type === 'unavailable-id') {
-                alert('This Session ID is already active somewhere else. Use a different name!');
-                location.reload();
+            if (err.type === 'unavailable-id') {
+                alert('This room is already in use on another monitor. Choose a different session ID.');
+                teardownSession(true);
             }
         });
     }
 
     function handleDataStreams() {
         conn.on('data', (data) => {
-            if (data.type === 'GATE_TRIGGER') {
-                processLapTrigger();
+            if (data.type === 'GATE_TRIGGER' && data.carId) {
+                processLapTrigger(data.carId);
             }
         });
+        conn.on('close', () => {
+            updateStatus('Camera disconnected');
+            document.getElementById('btn-race-start').disabled = true;
+        });
     }
 
-    function startRunningClock() {
-        let startTime = Date.now();
-        clockInterval = setInterval(() => {
-            let elapsed = Date.now() - startTime;
-            document.getElementById('running-clock').textContent = formatTime(elapsed);
-        }, 30);
-    }
-
-    function processLapTrigger() {
-        let currentTime = Date.now();
-        if (lastLapTime === 0) {
-            lastLapTime = currentTime;
-            document.getElementById('lap-log').innerHTML = ''; 
-            return;
-        }
-
-        let lapDuration = currentTime - lastLapTime;
-        if (lapDuration < 2000) return; // 2-second debounce filter to prevent false double-reads
-        
-        lastLapTime = currentTime;
-        lapCount++;
-
-        let isPB = false;
-        if (lapDuration < bestLapTime) {
-            bestLapTime = lapDuration;
-            isPB = true;
-            document.getElementById('val-best').textContent = formatTime(bestLapTime);
-        }
-
-        document.getElementById('val-last').textContent = formatTime(lapDuration);
-        
-        const log = document.getElementById('lap-log');
-        const row = document.createElement('div');
-        row.className = `lap-row ${isPB ? 'personal-best' : ''}`;
-        row.innerHTML = `<span>LAP ${lapCount}</span> <span>${formatTime(lapDuration)} ${isPB ? '★' : ''}</span>`;
-        log.insertBefore(row, log.firstChild);
-        
-        clearInterval(clockInterval);
-        startRunningClock();
-    }
-
-    function formatTime(ms) {
-        let minutes = Math.floor(ms / 60000);
-        let seconds = Math.floor((ms % 60000) / 1000);
-        let hundredths = Math.floor((ms % 1000) / 10);
-        return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}.${hundredths.toString().padStart(2, '0')}`;
-    }
-
-    // ==========================================
-    // TRACKSIDE CAMERA SENSOR LOGIC
-    // ==========================================
     function setupSensorEvents() {
         peer.on('open', () => {
-            updateStatus("Linking to Monitor Node...");
-            let connection = peer.connect('apextrack-' + sessionId);
-            
+            updateStatus('Linking to monitor…');
+            const connection = peer.connect('apextrack-' + sessionId, { reliable: true });
             connection.on('open', () => {
                 conn = connection;
-                updateStatus("LINK SUCCESSFUL - TRACKING CARS", true);
+                updateStatus('Gate active — scanning', 'connected');
                 document.getElementById('camera-view').classList.remove('hidden');
                 startCameraEngine();
+                handleSensorData();
             });
+            connection.on('error', () => updateStatus('Could not reach monitor. Check room ID.'));
         });
+    }
+
+    function handleSensorData() {
+        conn.on('data', (data) => {
+            if (data.type === 'RACE_STATE') {
+                if (data.settings) {
+                    settings.totalLaps = data.settings.totalLaps ?? settings.totalLaps;
+                    settings.raceName = data.settings.raceName ?? settings.raceName;
+                    settings.debounceSec = data.settings.debounceSec ?? settings.debounceSec;
+                    settings.minLapSec = data.settings.minLapSec ?? settings.minLapSec;
+                }
+                if (data.state === 'racing') {
+                    Object.keys(scanCooldown).forEach(k => delete scanCooldown[k]);
+                }
+            }
+        });
+        conn.on('close', () => updateStatus('Monitor disconnected'));
     }
 
     function startCameraEngine() {
@@ -270,53 +1197,154 @@
         const canvas = document.getElementById('hidden-canvas');
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-        navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment", frameRate: { ideal: 30 } }, audio: false })
-        .then((stream) => {
+        if (settings.mirrorCamera) video.classList.add('mirror');
+        else video.classList.remove('mirror');
+
+        navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'environment', frameRate: { ideal: 30 } },
+            audio: false
+        }).then(stream => {
             video.srcObject = stream;
-            video.setAttribute("playsinline", true);
-            video.play();
-            
-            requestAnimationFrame(function tick() {
+            video.setAttribute('playsinline', true);
+            return video.play();
+        }).then(() => {
+            const scan = () => {
+                if (!conn || !conn.open) return;
+
                 if (video.readyState === video.HAVE_ENOUGH_DATA) {
-                    canvas.height = video.videoHeight;
                     canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
                     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                    
-                    let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-                    let code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "dontInvert" });
-                    
-                    if (code) {
-                        conn.send({ type: 'GATE_TRIGGER', data: code.data });
+
+                    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                    const code = jsQR(imageData.data, imageData.width, imageData.height, {
+                        inversionAttempts: 'dontInvert'
+                    });
+
+                    if (code && code.data) {
+                        const carId = code.data.trim();
+                        const now = Date.now();
+                        const debounceMs = settings.debounceSec * 1000;
+
+                        if (!scanCooldown[carId] || now - scanCooldown[carId] >= debounceMs) {
+                            scanCooldown[carId] = now;
+                            document.getElementById('last-scan').textContent = carId;
+                            conn.send({ type: 'GATE_TRIGGER', carId });
+                            haptic(30);
+                        }
                     }
                 }
-                requestAnimationFrame(tick);
-            });
-        }).catch(err => alert("Camera acquisition failure: " + err));
+                requestAnimationFrame(scan);
+            };
+            requestAnimationFrame(scan);
+        }).catch(err => {
+            alert('Camera access failed: ' + err.message);
+        });
     }
 
-    // ==========================================
-    // QR CODE MARKER GENERATOR LOGIC
-    // ==========================================
+    function teardownSession(reload) {
+        if (conn) { try { conn.close(); } catch (_) {} conn = null; }
+        if (peer) { try { peer.destroy(); } catch (_) {} peer = null; }
+        stopRunningClock();
+        if (reload) location.reload();
+        else {
+            document.getElementById('session-panel').classList.add('hidden');
+            document.getElementById('monitor-view').classList.add('hidden');
+            document.getElementById('camera-view').classList.add('hidden');
+            document.getElementById('home-panel').classList.remove('hidden');
+            document.getElementById('btn-back').classList.add('hidden');
+        }
+    }
+
+    // --- QR markers ---
+
     function generateQR() {
         const text = document.getElementById('qr-text').value.trim();
-        if (!text) return alert('Please enter a car name or tracking tag value first.');
-        
+        if (!text) { alert('Enter a car name or ID first.'); return; }
+
+        if (!settings.savedMarkers.includes(text)) {
+            settings.savedMarkers.push(text);
+            if (settings.savedMarkers.length > 12) settings.savedMarkers.shift();
+            saveSettings();
+        }
+
         const container = document.getElementById('qrcode-container');
         const output = document.getElementById('qrcode-output');
-        
-        output.innerHTML = ""; // Clear old marker instance
+        output.innerHTML = '';
         container.classList.remove('hidden');
 
         new QRCode(output, {
-            text: text,
-            width: 180,
-            height: 180,
-            colorDark : "#000000",
-            colorLight : "#ffffff",
-            correctLevel : QRCode.CorrectLevel.H
+            text,
+            width: 200,
+            height: 200,
+            colorDark: '#000000',
+            colorLight: '#ffffff',
+            correctLevel: QRCode.CorrectLevel.H
+        });
+
+        renderSavedMarkers();
+        document.getElementById('qr-text').value = '';
+    }
+
+    function renderSavedMarkers() {
+        const list = document.getElementById('qr-saved-list');
+        list.innerHTML = '';
+        settings.savedMarkers.forEach(name => {
+            const card = document.createElement('div');
+            card.className = 'qr-card';
+            const mount = document.createElement('div');
+            card.appendChild(mount);
+            const label = document.createElement('div');
+            label.className = 'qr-card-label';
+            label.textContent = name;
+            card.appendChild(label);
+            list.appendChild(card);
+            new QRCode(mount, {
+                text: name,
+                width: 100,
+                height: 100,
+                colorDark: '#000000',
+                colorLight: '#ffffff',
+                correctLevel: QRCode.CorrectLevel.H
+            });
         });
     }
-</script>
 
+    // --- Event bindings ---
+
+    document.getElementById('btn-start-monitor').addEventListener('click', () => initDevice('monitor'));
+    document.getElementById('btn-start-sensor').addEventListener('click', () => initDevice('sensor'));
+    document.getElementById('btn-race-start').addEventListener('click', startRaceCountdown);
+    document.getElementById('btn-reset-race').addEventListener('click', () => {
+        if (confirm('Reset all lap data for this race?')) resetRace();
+    });
+    document.getElementById('btn-end-session').addEventListener('click', () => {
+        if (confirm('End this session?')) teardownSession(true);
+    });
+    document.getElementById('btn-back').addEventListener('click', () => {
+        if (confirm('Leave session?')) teardownSession(true);
+    });
+    document.getElementById('btn-export').addEventListener('click', exportResults);
+    document.getElementById('btn-generate-qr').addEventListener('click', generateQR);
+
+    document.getElementById('btn-reset-settings').addEventListener('click', () => {
+        if (confirm('Reset all settings to defaults?')) {
+            settings = { ...DEFAULTS };
+            saveSettings();
+            applySettingsToUI();
+            showToast('Settings reset');
+        }
+    });
+
+    ['session-id-input', 'race-name-input', 'race-laps-input',
+     'setting-debounce', 'setting-minlap', 'setting-countdown',
+     'setting-tts', 'setting-sound', 'setting-mirror', 'setting-haptic'
+    ].forEach(id => {
+        document.getElementById(id).addEventListener('change', () => readSettingsFromUI());
+    });
+
+    applySettingsToUI();
+})();
+</script>
 </body>
 </html>
