@@ -331,8 +331,13 @@
             background: #000;
             margin-top: 10px;
             border: 2px solid #3a4252;
+            transition: border-color 0.15s, box-shadow 0.15s;
         }
         video.mirror { transform: scaleX(-1); }
+        video.qr-locked {
+            border-color: var(--accent-green);
+            box-shadow: 0 0 16px rgba(0, 255, 136, 0.35);
+        }
         .sensor-overlay {
             margin-top: 12px;
             padding: 12px;
@@ -342,6 +347,8 @@
             text-align: left;
         }
         .last-scan { font-size: 1.1rem; font-weight: 700; color: var(--accent-green); margin-top: 4px; }
+        .scan-meta { display: flex; justify-content: space-between; gap: 10px; margin-top: 8px; font-size: 0.72rem; color: var(--text-muted); font-family: monospace; }
+        .scan-meta strong { color: var(--accent-green); }
 
         /* QR Generator */
         #qrcode-output { background: #fff; padding: 15px; border-radius: 8px; display: inline-block; }
@@ -501,15 +508,20 @@
     <div class="tab-panel" id="tab-settings" role="tabpanel">
         <div class="grid-2">
             <div>
-                <label for="setting-debounce">Gate debounce (sec)</label>
-                <input type="number" id="setting-debounce" min="1" max="30" step="0.5" value="2">
-                <p class="field-hint">Min time between triggers for the same car.</p>
+                <label for="setting-start-grace">Start grace (sec)</label>
+                <input type="number" id="setting-start-grace" min="0" max="30" step="0.5" value="3">
+                <p class="field-hint">No lap 1 until this long after GO.</p>
             </div>
             <div>
                 <label for="setting-minlap">Min lap time (sec)</label>
-                <input type="number" id="setting-minlap" min="1" max="120" step="0.5" value="3">
-                <p class="field-hint">Ignores laps shorter than this.</p>
+                <input type="number" id="setting-minlap" min="1" max="120" step="0.5" value="2">
+                <p class="field-hint">Min time between laps 2, 3, 4…</p>
             </div>
+        </div>
+        <div>
+            <label for="setting-debounce">Re-trigger cooldown (sec)</label>
+            <input type="number" id="setting-debounce" min="0.5" max="30" step="0.5" value="1.5">
+            <p class="field-hint">Same car can’t fire twice within this window (anti-flicker).</p>
         </div>
         <div>
             <label for="setting-countdown">Race countdown (sec)</label>
@@ -605,9 +617,14 @@
         <video id="video-feed" playsinline muted></video>
         <canvas id="hidden-canvas" class="hidden"></canvas>
         <div class="sensor-overlay">
-            <label>Last detection</label>
-            <div class="last-scan" id="last-scan">—</div>
-            <p class="field-hint" style="margin-top:8px;">Aim at QR markers as cars cross the line. Debounce prevents double reads.</p>
+            <label>Gate status</label>
+            <div class="last-scan" id="scan-status">Waiting for race…</div>
+            <div class="last-scan" id="last-scan" style="font-size:0.95rem;margin-top:6px;">—</div>
+            <div class="scan-meta">
+                <span>Scans: <strong id="scan-count">0</strong>/s</span>
+                <span>Sent: <strong id="sent-count">0</strong></span>
+            </div>
+            <p class="field-hint" style="margin-top:8px;">Each crossing sends once when the QR enters frame. Pull the code away between test scans.</p>
         </div>
     </div>
 </div>
@@ -625,13 +642,15 @@
 (function () {
     'use strict';
 
-    const STORAGE_KEY = 'apextrack-settings-v2';
+    const STORAGE_KEY = 'apextrack-settings-v3';
+    const SCAN_TARGET_WIDTH = 640;
     const DEFAULTS = {
         sessionId: 'rc-race-77',
         raceName: '',
         totalLaps: 5,
-        debounceSec: 2,
-        minLapSec: 3,
+        debounceSec: 1.5,
+        minLapSec: 2,
+        startGraceSec: 3,
         countdownSec: 3,
         ttsEnabled: true,
         soundEnabled: true,
@@ -642,6 +661,15 @@
 
     /** @type {Array<{id: string, name: string}>} sensor-side name lookup */
     let sensorRoster = [];
+    let sensorRaceState = 'ready';
+    let sensorRaceStartTime = null;
+    let gateQrVisible = false;
+    let gateCurrentId = '';
+    /** @type {Record<string, number>} */
+    let lastSentByCar = {};
+    let scanFrames = 0;
+    let scanFps = 0;
+    let sentTriggerCount = 0;
 
     let settings = loadSettings();
     let peer = null;
@@ -659,17 +687,16 @@
     const lapHistory = [];
     let globalLapSeq = 0;
 
-    /** @type {Record<string, number>} sensor-side cooldown */
-    const scanCooldown = {};
-
     // --- Settings persistence ---
 
     function loadSettings() {
         try {
             const raw = localStorage.getItem(STORAGE_KEY);
             if (raw) return normalizeSettings(JSON.parse(raw));
-            const legacy = localStorage.getItem('apextrack-settings-v1');
-            if (legacy) return normalizeSettings(JSON.parse(legacy));
+            for (const key of ['apextrack-settings-v2', 'apextrack-settings-v1']) {
+                const legacy = localStorage.getItem(key);
+                if (legacy) return normalizeSettings(JSON.parse(legacy));
+            }
         } catch (_) { /* ignore */ }
         return { ...DEFAULTS, racers: [] };
     }
@@ -677,6 +704,7 @@
     function normalizeSettings(data) {
         const merged = { ...DEFAULTS, ...data };
         if (!Array.isArray(merged.racers)) merged.racers = [];
+        if (merged.startGraceSec == null) merged.startGraceSec = DEFAULTS.startGraceSec;
         if (Array.isArray(data.savedMarkers) && !merged.racers.length) {
             merged.racers = data.savedMarkers.map(id => ({ id: String(id), name: String(id) }));
         }
@@ -695,8 +723,9 @@
         settings.sessionId = document.getElementById('session-id-input').value.trim().toLowerCase().replace(/\s+/g, '-');
         settings.raceName = document.getElementById('race-name-input').value.trim();
         settings.totalLaps = clamp(parseInt(document.getElementById('race-laps-input').value, 10) || 5, 1, 999);
-        settings.debounceSec = clamp(parseFloat(document.getElementById('setting-debounce').value) || 2, 1, 30);
-        settings.minLapSec = clamp(parseFloat(document.getElementById('setting-minlap').value) || 3, 1, 120);
+        settings.debounceSec = clamp(parseFloat(document.getElementById('setting-debounce').value) || 1.5, 0.5, 30);
+        settings.minLapSec = clamp(parseFloat(document.getElementById('setting-minlap').value) || 2, 1, 120);
+        settings.startGraceSec = clamp(parseFloat(document.getElementById('setting-start-grace').value) || 3, 0, 30);
         settings.countdownSec = clamp(parseInt(document.getElementById('setting-countdown').value, 10) || 0, 0, 10);
         settings.ttsEnabled = document.getElementById('setting-tts').checked;
         settings.soundEnabled = document.getElementById('setting-sound').checked;
@@ -711,6 +740,7 @@
         document.getElementById('race-laps-input').value = settings.totalLaps;
         document.getElementById('setting-debounce').value = settings.debounceSec;
         document.getElementById('setting-minlap').value = settings.minLapSec;
+        document.getElementById('setting-start-grace').value = settings.startGraceSec;
         document.getElementById('setting-countdown').value = settings.countdownSec;
         document.getElementById('setting-tts').checked = settings.ttsEnabled;
         document.getElementById('setting-sound').checked = settings.soundEnabled;
@@ -1001,20 +1031,25 @@
     // --- Lap processing (monitor) ---
 
     function processLapTrigger(carId) {
-        if (raceState !== 'racing') return;
+        const id = normalizeCarId(carId);
+        if (!id) return;
 
-        const car = getOrCreateCar(carId);
+        if (raceState !== 'racing') {
+            showToast(`Signal: ${resolveRacerName(id)} — press Start race on monitor`);
+            return;
+        }
+
+        const car = getOrCreateCar(id);
         if (!car || car.finished) return;
 
         const now = Date.now();
-        const minLapMs = settings.minLapSec * 1000;
-        const debounceMs = settings.debounceSec * 1000;
+        const minGapMs = car.lapCount === 0
+            ? settings.startGraceSec * 1000
+            : settings.minLapSec * 1000;
+        const lapStart = car.lapCount === 0 ? raceStartTime : car.lastCrossing;
+        const lapTime = now - (lapStart || now);
 
-        if (car.lastCrossing && now - car.lastCrossing < debounceMs) return;
-
-        const lapStart = car.lastCrossing || raceStartTime || now;
-        const lapTime = now - lapStart;
-        if (lapTime < minLapMs) return;
+        if (lapTime < minGapMs) return;
 
         car.lastCrossing = now;
         car.lapCount++;
@@ -1061,6 +1096,9 @@
         raceState = 'finished';
         stopRunningClock();
         updateStatus('Race complete', 'finished');
+        if (conn && conn.open) {
+            conn.send({ type: 'RACE_STATE', state: 'finished', settings: getRacePayload() });
+        }
 
         const winner = getLeader();
         if (winner && winner.finished) {
@@ -1085,6 +1123,9 @@
         document.getElementById('lap-log').innerHTML = '<div class="lap-empty">Laps appear here as cars cross the gate.</div>';
         document.getElementById('btn-race-start').disabled = !conn || !conn.open;
         updateStatus(conn && conn.open ? 'Camera connected — press Start race' : 'Waiting for camera…', conn && conn.open ? 'connected' : undefined);
+        if (conn && conn.open) {
+            conn.send({ type: 'RACE_STATE', state: 'ready', settings: getRacePayload() });
+        }
         seedRosterOnMonitor();
         updateRaceUI();
     }
@@ -1093,6 +1134,9 @@
         if (raceState !== 'ready' || !conn || !conn.open) return;
 
         raceState = 'countdown';
+        if (conn && conn.open) {
+            conn.send({ type: 'RACE_STATE', state: 'countdown', settings: getRacePayload() });
+        }
         const modal = document.getElementById('countdown-modal');
         const numEl = document.getElementById('countdown-num');
         let remaining = settings.countdownSec;
@@ -1144,6 +1188,8 @@
             raceName: settings.raceName,
             debounceSec: settings.debounceSec,
             minLapSec: settings.minLapSec,
+            startGraceSec: settings.startGraceSec,
+            raceStartTime: raceStartTime,
             racers: settings.racers
         };
     }
@@ -1267,6 +1313,56 @@
         });
     }
 
+    function applySensorRaceState(data) {
+        if (!data) return;
+        if (data.state) sensorRaceState = data.state;
+        if (data.settings) {
+            settings.totalLaps = data.settings.totalLaps ?? settings.totalLaps;
+            settings.raceName = data.settings.raceName ?? settings.raceName;
+            settings.debounceSec = data.settings.debounceSec ?? settings.debounceSec;
+            settings.minLapSec = data.settings.minLapSec ?? settings.minLapSec;
+            settings.startGraceSec = data.settings.startGraceSec ?? settings.startGraceSec;
+            if (data.settings.raceStartTime) sensorRaceStartTime = data.settings.raceStartTime;
+            if (Array.isArray(data.settings.racers)) sensorRoster = data.settings.racers;
+        }
+        if (data.state === 'racing') {
+            lastSentByCar = {};
+            gateQrVisible = false;
+            gateCurrentId = '';
+        }
+        if (data.state === 'ready' || data.state === 'finished') {
+            sensorRaceStartTime = null;
+        }
+        updateSensorStatusUI();
+    }
+
+    function updateSensorStatusUI() {
+        const el = document.getElementById('scan-status');
+        if (!el) return;
+        if (sensorRaceState === 'racing') el.textContent = 'Racing — gate live';
+        else if (sensorRaceState === 'countdown') el.textContent = 'Get ready…';
+        else if (sensorRaceState === 'finished') el.textContent = 'Race over';
+        else el.textContent = 'Waiting for race start on monitor…';
+    }
+
+    function maybeSendGateTrigger(carId) {
+        if (sensorRaceState !== 'racing') return;
+
+        const now = Date.now();
+        const cooldownMs = settings.debounceSec * 1000;
+        const last = lastSentByCar[carId] || 0;
+        if (now - last < cooldownMs) return;
+
+        lastSentByCar[carId] = now;
+        sentTriggerCount++;
+        const sentEl = document.getElementById('sent-count');
+        if (sentEl) sentEl.textContent = String(sentTriggerCount);
+
+        document.getElementById('last-scan').textContent = formatScanLabel(carId);
+        conn.send({ type: 'GATE_TRIGGER', carId });
+        haptic(30);
+    }
+
     function setupSensorEvents() {
         peer.on('open', () => {
             updateStatus('Linking to monitor…');
@@ -1284,20 +1380,7 @@
 
     function handleSensorData() {
         conn.on('data', (data) => {
-            if (data.type === 'RACE_STATE') {
-                if (data.settings) {
-                    settings.totalLaps = data.settings.totalLaps ?? settings.totalLaps;
-                    settings.raceName = data.settings.raceName ?? settings.raceName;
-                    settings.debounceSec = data.settings.debounceSec ?? settings.debounceSec;
-                    settings.minLapSec = data.settings.minLapSec ?? settings.minLapSec;
-                    if (Array.isArray(data.settings.racers)) {
-                        sensorRoster = data.settings.racers;
-                    }
-                }
-                if (data.state === 'racing') {
-                    Object.keys(scanCooldown).forEach(k => delete scanCooldown[k]);
-                }
-            }
+            if (data.type === 'RACE_STATE') applySensorRaceState(data);
             if (data.type === 'ROSTER' && Array.isArray(data.racers)) {
                 sensorRoster = data.racers;
             }
@@ -1318,8 +1401,18 @@
         if (settings.mirrorCamera) video.classList.add('mirror');
         else video.classList.remove('mirror');
 
+        updateSensorStatusUI();
+        sentTriggerCount = 0;
+        scanFrames = 0;
+        let fpsLastTick = Date.now();
+
         navigator.mediaDevices.getUserMedia({
-            video: { facingMode: 'environment', frameRate: { ideal: 30 } },
+            video: {
+                facingMode: 'environment',
+                width: { ideal: 1280, max: 1920 },
+                height: { ideal: 720 },
+                frameRate: { ideal: 30, min: 15 }
+            },
             audio: false
         }).then(stream => {
             video.srcObject = stream;
@@ -1327,33 +1420,55 @@
             return video.play();
         }).then(() => {
             const scan = () => {
+                requestAnimationFrame(scan);
                 if (!conn || !conn.open) return;
 
-                if (video.readyState === video.HAVE_ENOUGH_DATA) {
-                    canvas.width = video.videoWidth;
-                    canvas.height = video.videoHeight;
-                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-                    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-                    const code = jsQR(imageData.data, imageData.width, imageData.height, {
-                        inversionAttempts: 'attemptBoth'
-                    });
-
-                    if (code && code.data) {
-                        const carId = normalizeCarId(code.data);
-                        if (!carId) return;
-                        const now = Date.now();
-                        const debounceMs = settings.debounceSec * 1000;
-
-                        if (!scanCooldown[carId] || now - scanCooldown[carId] >= debounceMs) {
-                            scanCooldown[carId] = now;
-                            document.getElementById('last-scan').textContent = formatScanLabel(carId);
-                            conn.send({ type: 'GATE_TRIGGER', carId });
-                            haptic(30);
-                        }
-                    }
+                scanFrames++;
+                const fpsNow = Date.now();
+                if (fpsNow - fpsLastTick >= 1000) {
+                    scanFps = scanFrames;
+                    scanFrames = 0;
+                    fpsLastTick = fpsNow;
+                    const fpsEl = document.getElementById('scan-count');
+                    if (fpsEl) fpsEl.textContent = String(scanFps);
                 }
-                requestAnimationFrame(scan);
+
+                if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
+
+                const scale = Math.min(1, SCAN_TARGET_WIDTH / video.videoWidth);
+                canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+                canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+                const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                let code = jsQR(imageData.data, imageData.width, imageData.height, {
+                    inversionAttempts: 'dontInvert'
+                });
+                if (!code) {
+                    code = jsQR(imageData.data, imageData.width, imageData.height, {
+                        inversionAttempts: 'onlyInvert'
+                    });
+                }
+
+                if (code && code.data) {
+                    const carId = normalizeCarId(code.data);
+                    if (!carId) return;
+
+                    video.classList.add('qr-locked');
+
+                    if (!gateQrVisible) {
+                        maybeSendGateTrigger(carId);
+                    } else if (gateCurrentId !== carId) {
+                        maybeSendGateTrigger(carId);
+                    }
+                    gateQrVisible = true;
+                    gateCurrentId = carId;
+                    document.getElementById('last-scan').textContent = formatScanLabel(carId);
+                } else {
+                    video.classList.remove('qr-locked');
+                    gateQrVisible = false;
+                    gateCurrentId = '';
+                }
             };
             requestAnimationFrame(scan);
         }).catch(err => {
@@ -1514,7 +1629,7 @@
     });
 
     ['session-id-input', 'race-name-input', 'race-laps-input',
-     'setting-debounce', 'setting-minlap', 'setting-countdown',
+     'setting-debounce', 'setting-minlap', 'setting-start-grace', 'setting-countdown',
      'setting-tts', 'setting-sound', 'setting-mirror', 'setting-haptic'
     ].forEach(id => {
         document.getElementById(id).addEventListener('change', () => readSettingsFromUI());
