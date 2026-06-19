@@ -325,13 +325,49 @@
 
         /* Camera */
         #camera-view { text-align: center; }
+        .video-wrap {
+            position: relative;
+            width: 100%;
+            margin-top: 10px;
+        }
+        .scan-zone {
+            position: absolute;
+            left: 8%;
+            right: 8%;
+            top: 32%;
+            bottom: 32%;
+            border: 2px dashed rgba(0, 255, 136, 0.75);
+            border-radius: 8px;
+            pointer-events: none;
+            box-shadow: inset 0 0 24px rgba(0, 255, 136, 0.08);
+        }
+        .scan-zone-label {
+            position: absolute;
+            left: 50%;
+            top: 28%;
+            transform: translateX(-50%);
+            font-size: 0.62rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--accent-green);
+            background: rgba(15, 17, 21, 0.75);
+            padding: 3px 8px;
+            border-radius: 999px;
+            pointer-events: none;
+        }
+        .camera-toolbar {
+            display: flex;
+            gap: 8px;
+            margin-top: 10px;
+        }
+        .camera-toolbar .btn { width: auto; flex: 1; padding: 10px; font-size: 0.72rem; }
         video {
             width: 100%;
             border-radius: var(--radius);
             background: #000;
-            margin-top: 10px;
             border: 2px solid #3a4252;
             transition: border-color 0.15s, box-shadow 0.15s;
+            display: block;
         }
         video.mirror { transform: scaleX(-1); }
         video.qr-locked {
@@ -349,6 +385,45 @@
         .last-scan { font-size: 1.1rem; font-weight: 700; color: var(--accent-green); margin-top: 4px; }
         .scan-meta { display: flex; justify-content: space-between; gap: 10px; margin-top: 8px; font-size: 0.72rem; color: var(--text-muted); font-family: monospace; }
         .scan-meta strong { color: var(--accent-green); }
+
+        .manual-gate-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            margin-top: 12px;
+        }
+        .manual-gate-btn {
+            background: linear-gradient(135deg, #2c3e50, #34495e);
+            border: 2px solid #4e6a85;
+            color: white;
+            border-radius: 12px;
+            padding: 22px 10px;
+            font-weight: 800;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: transform 0.12s, border-color 0.12s;
+        }
+        .manual-gate-btn:active { transform: scale(0.97); border-color: var(--accent-green); }
+        .manual-gate-btn small {
+            display: block;
+            font-size: 0.65rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            margin-top: 4px;
+            font-family: monospace;
+        }
+        .mode-badge {
+            display: inline-block;
+            font-size: 0.65rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            padding: 4px 10px;
+            border-radius: 999px;
+            background: var(--bg-dark);
+            border: 1px solid var(--border);
+            color: var(--accent-green);
+            margin-bottom: 8px;
+        }
 
         /* QR Generator */
         #qrcode-output { background: #fff; padding: 15px; border-radius: 8px; display: inline-block; }
@@ -496,7 +571,7 @@
         </div>
 
         <h2 style="margin-top:16px;">Print markers</h2>
-        <p class="field-hint">Tap <strong>QR</strong> on a racer to preview their code, or print all below.</p>
+        <p class="field-hint">Print codes <strong>at least 10 cm / 4 in square</strong> on the side of the car. For fast cars, use <strong>Manual gate mode</strong> in Settings instead.</p>
         <div id="qrcode-container" class="hidden" style="text-align:center;margin-top:12px;">
             <div id="qrcode-output"></div>
             <p class="field-hint" id="qrcode-preview-label" style="margin-top:8px;"></p>
@@ -526,6 +601,14 @@
         <div>
             <label for="setting-countdown">Race countdown (sec)</label>
             <input type="number" id="setting-countdown" min="0" max="10" value="3">
+        </div>
+
+        <div class="toggle-row">
+            <div>
+                <span>Manual gate mode</span>
+                <small>Tap car buttons when they cross — best for fast RC</small>
+            </div>
+            <label class="switch"><input type="checkbox" id="setting-manual-gate"><span class="slider"></span></label>
         </div>
 
         <div class="toggle-row">
@@ -613,9 +696,27 @@
 
     <!-- SENSOR -->
     <div id="camera-view" class="hidden">
-        <label>Finish-line camera</label>
-        <video id="video-feed" playsinline muted></video>
-        <canvas id="hidden-canvas" class="hidden"></canvas>
+        <div class="mode-badge" id="gate-mode-badge">QR scan mode</div>
+        <div id="qr-gate-panel">
+            <label>Finish-line camera — aim gate box at the line</label>
+            <div class="video-wrap">
+                <video id="video-feed" playsinline muted></video>
+                <div class="scan-zone" id="scan-zone"></div>
+                <div class="scan-zone-label">Finish line</div>
+            </div>
+            <canvas id="hidden-canvas" class="hidden"></canvas>
+            <div class="camera-toolbar">
+                <button type="button" class="btn btn-ghost btn-sm" id="btn-torch">Light off</button>
+                <button type="button" class="btn btn-ghost btn-sm" id="btn-detector-info">Detector: …</button>
+            </div>
+        </div>
+        <div id="manual-gate-panel" class="hidden">
+            <label>Manual gate — tap when car crosses</label>
+            <p class="field-hint">Stand at the finish line. Tap the car that just crossed. Works at any speed.</p>
+            <div class="manual-gate-grid" id="manual-gate-buttons">
+                <div class="lap-empty">Waiting for racer list from monitor…</div>
+            </div>
+        </div>
         <div class="sensor-overlay">
             <label>Gate status</label>
             <div class="last-scan" id="scan-status">Waiting for race…</div>
@@ -624,7 +725,6 @@
                 <span>Scans: <strong id="scan-count">0</strong>/s</span>
                 <span>Sent: <strong id="sent-count">0</strong></span>
             </div>
-            <p class="field-hint" style="margin-top:8px;">Each crossing sends once when the QR enters frame. Pull the code away between test scans.</p>
         </div>
     </div>
 </div>
@@ -642,8 +742,8 @@
 (function () {
     'use strict';
 
-    const STORAGE_KEY = 'apextrack-settings-v3';
-    const SCAN_TARGET_WIDTH = 640;
+    const STORAGE_KEY = 'apextrack-settings-v4';
+    const SCAN_TARGET_WIDTH = 960;
     const DEFAULTS = {
         sessionId: 'rc-race-77',
         raceName: '',
@@ -656,6 +756,7 @@
         soundEnabled: true,
         mirrorCamera: true,
         hapticEnabled: true,
+        manualGate: false,
         racers: []
     };
 
@@ -670,6 +771,12 @@
     let scanFrames = 0;
     let scanFps = 0;
     let sentTriggerCount = 0;
+    let videoTrack = null;
+    let torchOn = false;
+    let scanLoopActive = false;
+    /** @type {BarcodeDetector | null} */
+    let barcodeDetector = null;
+    let detectorLabel = 'jsQR';
 
     let settings = loadSettings();
     let peer = null;
@@ -693,7 +800,7 @@
         try {
             const raw = localStorage.getItem(STORAGE_KEY);
             if (raw) return normalizeSettings(JSON.parse(raw));
-            for (const key of ['apextrack-settings-v2', 'apextrack-settings-v1']) {
+            for (const key of ['apextrack-settings-v3', 'apextrack-settings-v2', 'apextrack-settings-v1']) {
                 const legacy = localStorage.getItem(key);
                 if (legacy) return normalizeSettings(JSON.parse(legacy));
             }
@@ -705,6 +812,7 @@
         const merged = { ...DEFAULTS, ...data };
         if (!Array.isArray(merged.racers)) merged.racers = [];
         if (merged.startGraceSec == null) merged.startGraceSec = DEFAULTS.startGraceSec;
+        if (merged.manualGate == null) merged.manualGate = false;
         if (Array.isArray(data.savedMarkers) && !merged.racers.length) {
             merged.racers = data.savedMarkers.map(id => ({ id: String(id), name: String(id) }));
         }
@@ -731,7 +839,9 @@
         settings.soundEnabled = document.getElementById('setting-sound').checked;
         settings.mirrorCamera = document.getElementById('setting-mirror').checked;
         settings.hapticEnabled = document.getElementById('setting-haptic').checked;
+        settings.manualGate = document.getElementById('setting-manual-gate').checked;
         saveSettings();
+        updateGateModeUI();
     }
 
     function applySettingsToUI() {
@@ -746,8 +856,50 @@
         document.getElementById('setting-sound').checked = settings.soundEnabled;
         document.getElementById('setting-mirror').checked = settings.mirrorCamera;
         document.getElementById('setting-haptic').checked = settings.hapticEnabled;
+        document.getElementById('setting-manual-gate').checked = settings.manualGate;
         renderRacersList();
         renderRacerQRGrid();
+        updateGateModeUI();
+    }
+
+    function updateGateModeUI() {
+        const badge = document.getElementById('gate-mode-badge');
+        const qrPanel = document.getElementById('qr-gate-panel');
+        const manualPanel = document.getElementById('manual-gate-panel');
+        if (!badge) return;
+        if (settings.manualGate) {
+            badge.textContent = 'Manual tap mode';
+            if (qrPanel) qrPanel.classList.add('hidden');
+            if (manualPanel) manualPanel.classList.remove('hidden');
+        } else {
+            badge.textContent = 'QR scan mode';
+            if (qrPanel) qrPanel.classList.remove('hidden');
+            if (manualPanel) manualPanel.classList.add('hidden');
+        }
+        renderManualGateButtons();
+    }
+
+    function renderManualGateButtons() {
+        const grid = document.getElementById('manual-gate-buttons');
+        if (!grid) return;
+        const roster = sensorRoster.length ? sensorRoster : settings.racers;
+        if (!roster.length) {
+            grid.innerHTML = '<div class="lap-empty">Add racers on the home screen first.</div>';
+            return;
+        }
+        grid.innerHTML = roster.map(r => `
+            <button type="button" class="manual-gate-btn" data-manual-id="${escapeHtml(r.id)}">
+                ${escapeHtml(r.name)}
+                <small>ID ${escapeHtml(r.id)}</small>
+            </button>`).join('');
+        grid.querySelectorAll('[data-manual-id]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const id = btn.getAttribute('data-manual-id');
+                gateQrVisible = false;
+                gateCurrentId = '';
+                maybeSendGateTrigger(id);
+            });
+        });
     }
 
     function resolveRacerName(id) {
@@ -1334,6 +1486,7 @@
             sensorRaceStartTime = null;
         }
         updateSensorStatusUI();
+        renderManualGateButtons();
     }
 
     function updateSensorStatusUI() {
@@ -1383,6 +1536,7 @@
             if (data.type === 'RACE_STATE') applySensorRaceState(data);
             if (data.type === 'ROSTER' && Array.isArray(data.racers)) {
                 sensorRoster = data.racers;
+                renderManualGateButtons();
             }
         });
         conn.on('close', () => updateStatus('Monitor disconnected'));
@@ -1393,7 +1547,93 @@
         return name === carId ? carId : `${name} (${carId})`;
     }
 
+    function initBarcodeDetector() {
+        if (typeof BarcodeDetector === 'undefined') return null;
+        try {
+            return new BarcodeDetector({ formats: ['qr_code'] });
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function drawFinishLineCrop(video, canvas, ctx) {
+        const vw = video.videoWidth;
+        const vh = video.videoHeight;
+        const cropW = vw * 0.88;
+        const cropH = vh * 0.42;
+        const sx = (vw - cropW) / 2;
+        const sy = (vh - cropH) / 2;
+        canvas.width = SCAN_TARGET_WIDTH;
+        canvas.height = Math.max(1, Math.round(SCAN_TARGET_WIDTH * (cropH / cropW)));
+        ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, canvas.width, canvas.height);
+        return ctx.getImageData(0, 0, canvas.width, canvas.height);
+    }
+
+    async function detectQrFromVideo(video, canvas, ctx) {
+        if (barcodeDetector) {
+            try {
+                const codes = await barcodeDetector.detect(video);
+                if (codes && codes.length) {
+                    const id = normalizeCarId(codes[0].rawValue);
+                    if (id) return id;
+                }
+            } catch (_) { /* fall through */ }
+        }
+
+        const imageData = drawFinishLineCrop(video, canvas, ctx);
+        let code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: 'dontInvert' });
+        if (!code) {
+            code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: 'onlyInvert' });
+        }
+        return code && code.data ? normalizeCarId(code.data) : null;
+    }
+
+    function handleQrDetection(carId, video) {
+        if (!carId) {
+            video.classList.remove('qr-locked');
+            gateQrVisible = false;
+            gateCurrentId = '';
+            return;
+        }
+
+        video.classList.add('qr-locked');
+        if (!gateQrVisible) {
+            maybeSendGateTrigger(carId);
+        } else if (gateCurrentId !== carId) {
+            maybeSendGateTrigger(carId);
+        }
+        gateQrVisible = true;
+        gateCurrentId = carId;
+        document.getElementById('last-scan').textContent = formatScanLabel(carId);
+    }
+
+    async function toggleTorch() {
+        if (!videoTrack) {
+            showToast('Camera not ready');
+            return;
+        }
+        const caps = videoTrack.getCapabilities?.();
+        if (!caps || !caps.torch) {
+            showToast('Torch not supported on this phone');
+            return;
+        }
+        torchOn = !torchOn;
+        try {
+            await videoTrack.applyConstraints({ advanced: [{ torch: torchOn }] });
+            document.getElementById('btn-torch').textContent = torchOn ? 'Light on' : 'Light off';
+        } catch (_) {
+            showToast('Could not toggle light');
+        }
+    }
+
     function startCameraEngine() {
+        if (settings.manualGate) {
+            updateSensorStatusUI();
+            updateGateModeUI();
+            renderManualGateButtons();
+            return;
+        }
+
         const video = document.getElementById('video-feed');
         const canvas = document.getElementById('hidden-canvas');
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -1401,27 +1641,39 @@
         if (settings.mirrorCamera) video.classList.add('mirror');
         else video.classList.remove('mirror');
 
+        barcodeDetector = initBarcodeDetector();
+        detectorLabel = barcodeDetector ? 'Native (fast)' : 'jsQR crop';
+        const detBtn = document.getElementById('btn-detector-info');
+        if (detBtn) detBtn.textContent = detectorLabel;
+
         updateSensorStatusUI();
+        updateGateModeUI();
         sentTriggerCount = 0;
         scanFrames = 0;
+        scanLoopActive = true;
         let fpsLastTick = Date.now();
+        let detectInFlight = false;
 
-        navigator.mediaDevices.getUserMedia({
+        const constraints = {
             video: {
                 facingMode: 'environment',
-                width: { ideal: 1280, max: 1920 },
-                height: { ideal: 720 },
-                frameRate: { ideal: 30, min: 15 }
+                width: { ideal: 1920 },
+                height: { ideal: 1080 },
+                frameRate: { ideal: 60, min: 24 }
             },
             audio: false
-        }).then(stream => {
+        };
+
+        navigator.mediaDevices.getUserMedia(constraints).then(stream => {
             video.srcObject = stream;
+            videoTrack = stream.getVideoTracks()[0] || null;
             video.setAttribute('playsinline', true);
             return video.play();
         }).then(() => {
-            const scan = () => {
+            const scan = async () => {
+                if (!scanLoopActive) return;
                 requestAnimationFrame(scan);
-                if (!conn || !conn.open) return;
+                if (!conn || !conn.open || detectInFlight) return;
 
                 scanFrames++;
                 const fpsNow = Date.now();
@@ -1435,48 +1687,48 @@
 
                 if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
 
-                const scale = Math.min(1, SCAN_TARGET_WIDTH / video.videoWidth);
-                canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
-                canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
-                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-                const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-                let code = jsQR(imageData.data, imageData.width, imageData.height, {
-                    inversionAttempts: 'dontInvert'
-                });
-                if (!code) {
-                    code = jsQR(imageData.data, imageData.width, imageData.height, {
-                        inversionAttempts: 'onlyInvert'
-                    });
-                }
-
-                if (code && code.data) {
-                    const carId = normalizeCarId(code.data);
-                    if (!carId) return;
-
-                    video.classList.add('qr-locked');
-
-                    if (!gateQrVisible) {
-                        maybeSendGateTrigger(carId);
-                    } else if (gateCurrentId !== carId) {
-                        maybeSendGateTrigger(carId);
-                    }
-                    gateQrVisible = true;
-                    gateCurrentId = carId;
-                    document.getElementById('last-scan').textContent = formatScanLabel(carId);
-                } else {
-                    video.classList.remove('qr-locked');
-                    gateQrVisible = false;
-                    gateCurrentId = '';
+                detectInFlight = true;
+                try {
+                    const carId = await detectQrFromVideo(video, canvas, ctx);
+                    handleQrDetection(carId, video);
+                } finally {
+                    detectInFlight = false;
                 }
             };
             requestAnimationFrame(scan);
-        }).catch(err => {
-            alert('Camera access failed: ' + err.message);
+        }).catch(() => {
+            navigator.mediaDevices.getUserMedia({
+                video: { facingMode: 'environment', frameRate: { ideal: 30 } },
+                audio: false
+            }).then(stream => {
+                video.srcObject = stream;
+                videoTrack = stream.getVideoTracks()[0] || null;
+                video.setAttribute('playsinline', true);
+                return video.play();
+            }).then(() => {
+                const scan = async () => {
+                    if (!scanLoopActive) return;
+                    requestAnimationFrame(scan);
+                    if (!conn || !conn.open || detectInFlight) return;
+                    if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
+                    detectInFlight = true;
+                    try {
+                        handleQrDetection(await detectQrFromVideo(video, canvas, ctx), video);
+                    } finally {
+                        detectInFlight = false;
+                    }
+                };
+                requestAnimationFrame(scan);
+            }).catch(err => alert('Camera access failed: ' + err.message));
         });
     }
 
     function teardownSession(reload) {
+        scanLoopActive = false;
+        if (videoTrack) {
+            try { videoTrack.stop(); } catch (_) {}
+            videoTrack = null;
+        }
         if (conn) { try { conn.close(); } catch (_) {} conn = null; }
         if (peer) { try { peer.destroy(); } catch (_) {} peer = null; }
         stopRunningClock();
@@ -1562,8 +1814,8 @@
 
         new QRCode(output, {
             text: id,
-            width: 280,
-            height: 280,
+            width: 320,
+            height: 320,
             colorDark: '#000000',
             colorLight: '#ffffff',
             correctLevel: QRCode.CorrectLevel.L
@@ -1586,8 +1838,8 @@
             list.appendChild(card);
             new QRCode(mount, {
                 text: r.id,
-                width: 140,
-                height: 140,
+                width: 180,
+                height: 180,
                 colorDark: '#000000',
                 colorLight: '#ffffff',
                 correctLevel: QRCode.CorrectLevel.L
@@ -1611,6 +1863,7 @@
     });
     document.getElementById('btn-export').addEventListener('click', exportResults);
     document.getElementById('btn-add-racer').addEventListener('click', addRacer);
+    document.getElementById('btn-torch').addEventListener('click', toggleTorch);
     document.getElementById('racer-name-input').addEventListener('keydown', e => {
         if (e.key === 'Enter') addRacer();
     });
@@ -1630,7 +1883,7 @@
 
     ['session-id-input', 'race-name-input', 'race-laps-input',
      'setting-debounce', 'setting-minlap', 'setting-start-grace', 'setting-countdown',
-     'setting-tts', 'setting-sound', 'setting-mirror', 'setting-haptic'
+     'setting-tts', 'setting-sound', 'setting-mirror', 'setting-haptic', 'setting-manual-gate'
     ].forEach(id => {
         document.getElementById(id).addEventListener('change', () => readSettingsFromUI());
     });
