@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ApexTrack Live // RC Lap Timer</title>
+    
+    <!-- External Dependencies for QR Reading, P2P Networking, and QR Generation -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.2/peerjs.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    
+    <style>
+        :root {
+            --bg-dark: #0f1115;
+            --panel-bg: #181b22;
+            --accent-green: #00ff88;
+            --accent-red: #ff3e3e;
+            --text-main: #f0f4f8;
+            --text-muted: #6c7a89;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: '-apple-system', BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+        body { background-color: var(--bg-dark); color: var(--text-main); padding: 20px; display: flex; flex-direction: column; align-items: center; gap: 20px; }
+        
+        .container { width: 100%; max-width: 600px; background: var(--panel-bg); padding: 25px; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); border: 1px solid #252a35; }
+        h1, h3 { font-size: 1.5rem; text-transform: uppercase; letter-spacing: 2px; margin-bottom: 20px; color: var(--accent-green); text-align: center; border-bottom: 2px solid #252a35; padding-bottom: 10px; }
+        h3 { font-size: 1.1rem; border-bottom: 1px solid #252a35; padding-bottom: 6px; margin-bottom: 15px; text-align: left; }
+        
+        .setup-pane { display: flex; flex-direction: column; gap: 15px; }
+        label { font-size: 0.85rem; text-transform: uppercase; color: var(--text-muted); letter-spacing: 1px; }
+        input { background: #0f1115; border: 1px solid #3a4252; padding: 12px; border-radius: 8px; color: white; font-size: 1rem; width: 100%; text-align: center; }
+        input:focus { border-color: var(--accent-green); outline: none; }
+        
+        .btn { background: #252a35; color: white; border: none; padding: 14px; border-radius: 8px; font-weight: bold; cursor: pointer; transition: all 0.2s ease; text-transform: uppercase; font-size: 0.9rem; letter-spacing: 1px; width: 100%; }
+        .btn-sensor { background: linear-gradient(135deg, #2c3e50, #34495e); border: 1px solid #4e6a85; }
+        .btn-monitor { background: linear-gradient(135deg, #11998e, #38ef7d); color: #0f1115; }
+        .btn-generator { background: linear-gradient(135deg, #4a148c, #7b1fa2); border: 1px solid #9c27b0; margin-top: 5px; }
+        .btn:hover { transform: translateY(-2px); opacity: 0.95; }
+
+        .hidden { display: none !important; }
+        .status-bar { background: #0f1115; padding: 10px; border-radius: 8px; text-align: center; font-size: 0.9rem; margin-top: 15px; border-left: 4px solid var(--text-muted); }
+        .status-connected { border-left-color: var(--accent-green); color: var(--accent-green); }
+
+        /* Camera UI Layout */
+        #camera-view { text-align: center; }
+        video { width: 100%; border-radius: 12px; background: #000; transform: scaleX(1); margin-top: 15px; border: 2px solid #3a4252; }
+        
+        /* Monitor UI Layout */
+        #monitor-view { display: flex; flex-direction: column; gap: 20px; }
+        .live-timer { font-size: 4rem; font-family: monospace; text-align: center; color: var(--text-main); font-weight: bold; text-shadow: 0 0 10px rgba(255,255,255,0.1); margin: 10px 0; }
+        
+        .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+        .stat-card { background: #0f1115; padding: 15px; border-radius: 10px; text-align: center; border: 1px solid #252a35; }
+        .stat-val { font-size: 1.8rem; font-family: monospace; font-weight: bold; color: var(--accent-green); margin-top: 5px; }
+
+        .history-list { background: #0f1115; border-radius: 10px; padding: 10px; max-height: 200px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+        .lap-row { display: flex; justify-content: space-between; padding: 8px 12px; background: var(--panel-bg); border-radius: 6px; font-family: monospace; font-size: 0.95rem; }
+        .lap-row.personal-best { border: 1px solid var(--accent-green); color: var(--accent-green); }
+
+        /* Generator Output Container */
+        #qrcode-output { background: #fff; padding: 15px; border-radius: 8px; display: inline-block; }
+        #qrcode-container { text-align: center; margin-top: 15px; }
+    </style>
+</head>
+<body>
+
+<!-- MAIN TRACK APPLICATION CONTAINER -->
+<div class="container">
+    <h1>ApexTrack // Live</h1>
+    
+    <!-- 1. INITIAL SETUP CONFIGURATION SCREEN -->
+    <div id="setup-screen" class="setup-pane">
+        <div>
+            <label>Set Room / Session ID</label>
+            <input type="text" id="session-id-input" value="rc-race-77">
+        </div>
+        <button class="btn btn-monitor" onclick="initDevice('monitor')">Start as Monitor (Receiver)</button>
+        <button class="btn btn-sensor" onclick="initDevice('sensor')">Start as Camera (Sensor)</button>
+    </div>
+
+    <!-- CONNECTION/SYSTEM STATUS TEXT -->
+    <div id="status-display" class="status-bar hidden">Initializing Network Layer...</div>
+
+    <!-- 2. TRACKSIDE CAMERA SENSOR INTERFACE -->
+    <div id="camera-view" class="hidden">
+        <label>Live Detection Matrix</label>
+        <video id="video-feed" playsinline></video>
+        <canvas id="hidden-canvas" class="hidden"></canvas>
+    </div>
+
+    <!-- 3. PIT WALL MONITOR/RECEIVER DASHBOARD -->
+    <div id="monitor-view" class="hidden">
+        <div class="live-timer" id="running-clock">00:00.00</div>
+        
+        <div class="stats-grid">
+            <div class="stat-card">
+                <label>Last Lap</label>
+                <div class="stat-val" id="val-last">--:--.--</div>
+            </div>
+            <div class="stat-card">
+                <label>Best Lap</label>
+                <div class="stat-val" id="val-best" style="color: var(--accent-green);">--:--.--</div>
+            </div>
+        </div>
+
+        <div>
+            <label style="display:block; margin-bottom: 8px;">Lap Log Matrix</label>
+            <div class="history-list" id="lap-log">
+                <div style="color: var(--text-muted); text-align: center; padding: 20px;">Awaiting first gate trigger...</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- INTEGRATED QR MARKER GENERATOR UTILITY -->
+<div class="container" id="generator-panel">
+    <h3>Car Marker Generator</h3>
+    <div class="setup-pane">
+        <div>
+            <label>Enter Car Name / ID</label>
+            <input type="text" id="qr-text" placeholder="e.g., Buggy 1" style="margin-top: 5px;">
+        </div>
+        <button class="btn btn-generator" onclick="generateQR()">Generate Live Marker</button>
+        <div id="qrcode-container" class="hidden">
+            <div id="qrcode-output"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+    let peer = null;
+    let conn = null;
+    let myRole = '';
+    let sessionId = '';
+    
+    // Timing states (Kept on Receiver side)
+    let lastLapTime = 0;
+    let bestLapTime = Infinity;
+    let lapCount = 0;
+    let clockInterval = null;
+
+    const statusDisplay = document.getElementById('status-display');
+
+    function updateStatus(text, isConnected = false) {
+        statusDisplay.classList.remove('hidden');
+        statusDisplay.textContent = text;
+        if (isConnected) statusDisplay.classList.add('status-connected');
+        else statusDisplay.classList.remove('status-connected');
+    }
+
+    function initDevice(role) {
+        myRole = role;
+        sessionId = document.getElementById('session-id-input').value.trim().toLowerCase();
+        
+        if (!sessionId) return alert('Please enter a valid Room/Session ID');
+        
+        document.getElementById('setup-screen').classList.add('hidden');
+        document.getElementById('generator-panel').classList.add('hidden'); // Hide generator during active tracking sessions
+        updateStatus("Connecting to global signaling server...");
+
+        if (role === 'monitor') {
+            peer = new Peer('apextrack-' + sessionId);
+            setupMonitorEvents();
+        } else {
+            peer = new Peer(); // Random ID for sensor phone
+            setupSensorEvents();
+        }
+    }
+
+    // ==========================================
+    // RECEIVER / MONITOR DASHBOARD LOGIC
+    // ==========================================
+    function setupMonitorEvents() {
+        peer.on('open', () => {
+            updateStatus(`Waiting for Camera Device... Room ID: ${sessionId}`);
+            document.getElementById('monitor-view').classList.remove('hidden');
+        });
+
+        peer.on('connection', (connection) => {
+            conn = connection;
+            updateStatus("CAMERA BOUND & SCANNING LIVE", true);
+            startRunningClock();
+            handleDataStreams();
+        });
+        
+        peer.on('error', (err) => {
+            if(err.type === 'unavailable-id') {
+                alert('This Session ID is already active somewhere else. Use a different name!');
+                location.reload();
+            }
+        });
+    }
+
+    function handleDataStreams() {
+        conn.on('data', (data) => {
+            if (data.type === 'GATE_TRIGGER') {
+                processLapTrigger();
+            }
+        });
+    }
+
+    function startRunningClock() {
+        let startTime = Date.now();
+        clockInterval = setInterval(() => {
+            let elapsed = Date.now() - startTime;
+            document.getElementById('running-clock').textContent = formatTime(elapsed);
+        }, 30);
+    }
+
+    function processLapTrigger() {
+        let currentTime = Date.now();
+        if (lastLapTime === 0) {
+            lastLapTime = currentTime;
+            document.getElementById('lap-log').innerHTML = ''; 
+            return;
+        }
+
+        let lapDuration = currentTime - lastLapTime;
+        if (lapDuration < 2000) return; // 2-second debounce filter to prevent false double-reads
+        
+        lastLapTime = currentTime;
+        lapCount++;
+
+        let isPB = false;
+        if (lapDuration < bestLapTime) {
+            bestLapTime = lapDuration;
+            isPB = true;
+            document.getElementById('val-best').textContent = formatTime(bestLapTime);
+        }
+
+        document.getElementById('val-last').textContent = formatTime(lapDuration);
+        
+        const log = document.getElementById('lap-log');
+        const row = document.createElement('div');
+        row.className = `lap-row ${isPB ? 'personal-best' : ''}`;
+        row.innerHTML = `<span>LAP ${lapCount}</span> <span>${formatTime(lapDuration)} ${isPB ? '★' : ''}</span>`;
+        log.insertBefore(row, log.firstChild);
+        
+        clearInterval(clockInterval);
+        startRunningClock();
+    }
+
+    function formatTime(ms) {
+        let minutes = Math.floor(ms / 60000);
+        let seconds = Math.floor((ms % 60000) / 1000);
+        let hundredths = Math.floor((ms % 1000) / 10);
+        return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}.${hundredths.toString().padStart(2, '0')}`;
+    }
+
+    // ==========================================
+    // TRACKSIDE CAMERA SENSOR LOGIC
+    // ==========================================
+    function setupSensorEvents() {
+        peer.on('open', () => {
+            updateStatus("Linking to Monitor Node...");
+            let connection = peer.connect('apextrack-' + sessionId);
+            
+            connection.on('open', () => {
+                conn = connection;
+                updateStatus("LINK SUCCESSFUL - TRACKING CARS", true);
+                document.getElementById('camera-view').classList.remove('hidden');
+                startCameraEngine();
+            });
+        });
+    }
+
+    function startCameraEngine() {
+        const video = document.getElementById('video-feed');
+        const canvas = document.getElementById('hidden-canvas');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+        navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment", frameRate: { ideal: 30 } }, audio: false })
+        .then((stream) => {
+            video.srcObject = stream;
+            video.setAttribute("playsinline", true);
+            video.play();
+            
+            requestAnimationFrame(function tick() {
+                if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                    canvas.height = video.videoHeight;
+                    canvas.width = video.videoWidth;
+                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                    
+                    let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                    let code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "dontInvert" });
+                    
+                    if (code) {
+                        conn.send({ type: 'GATE_TRIGGER', data: code.data });
+                    }
+                }
+                requestAnimationFrame(tick);
+            });
+        }).catch(err => alert("Camera acquisition failure: " + err));
+    }
+
+    // ==========================================
+    // QR CODE MARKER GENERATOR LOGIC
+    // ==========================================
+    function generateQR() {
+        const text = document.getElementById('qr-text').value.trim();
+        if (!text) return alert('Please enter a car name or tracking tag value first.');
+        
+        const container = document.getElementById('qrcode-container');
+        const output = document.getElementById('qrcode-output');
+        
+        output.innerHTML = ""; // Clear old marker instance
+        container.classList.remove('hidden');
+
+        new QRCode(output, {
+            text: text,
+            width: 180,
+            height: 180,
+            colorDark : "#000000",
+            colorLight : "#ffffff",
+            correctLevel : QRCode.CorrectLevel.H
+        });
+    }
+</script>
+
+</body>
+</html>
