@@ -4,14 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="theme-color" content="#0f1115">
-    <meta name="description" content="ApexTrack Live — RC lap timer with QR gate detection">
+    <meta name="description" content="ApexTrack Live — RC lap timer with color gate detection">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>ApexTrack Live // RC Lap Timer</title>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.2/peerjs.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 
     <style>
         :root {
@@ -370,10 +368,49 @@
             display: block;
         }
         video.mirror { transform: scaleX(-1); }
-        video.qr-locked {
+        video.gate-locked {
             border-color: var(--accent-green);
             box-shadow: 0 0 16px rgba(0, 255, 136, 0.35);
         }
+        .color-swatch {
+            width: 44px; height: 44px;
+            border-radius: 10px;
+            border: 2px solid var(--border);
+            flex-shrink: 0;
+        }
+        .color-swatch.unset {
+            background: repeating-linear-gradient(45deg, #333, #333 6px, #444 6px, #444 12px);
+        }
+        .calib-backdrop {
+            position: fixed; inset: 0;
+            background: rgba(0,0,0,0.92);
+            z-index: 250;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 16px;
+            gap: 12px;
+        }
+        .calib-backdrop .video-wrap { max-width: 640px; width: 100%; }
+        .calib-reticle {
+            position: absolute;
+            left: 50%; top: 50%;
+            transform: translate(-50%, -50%);
+            width: 28%; height: 28%;
+            border: 3px solid var(--accent-amber);
+            border-radius: 8px;
+            box-shadow: 0 0 0 9999px rgba(0,0,0,0.35);
+            pointer-events: none;
+        }
+        .calib-preview {
+            width: 56px; height: 56px;
+            border-radius: 12px;
+            border: 2px solid var(--border);
+            margin: 0 auto;
+        }
+        .calib-actions { display: flex; gap: 10px; width: 100%; max-width: 640px; }
+        .calib-actions .btn { flex: 1; }
         .sensor-overlay {
             margin-top: 12px;
             padding: 12px;
@@ -516,7 +553,7 @@
 <header class="app-header">
     <div class="brand">
         <div class="brand-title">ApexTrack</div>
-        <div class="brand-sub">Live RC Lap Timer</div>
+        <div class="brand-sub">Live RC Color Gate</div>
     </div>
     <button type="button" class="icon-btn hidden" id="btn-back" title="Exit session" aria-label="Exit session">←</button>
 </header>
@@ -552,31 +589,17 @@
 
     <!-- Racers tab -->
     <div class="tab-panel" id="tab-racers" role="tabpanel">
-        <p class="field-hint" style="margin-bottom:4px;">Register who’s racing before you start. Use a <strong>short QR ID</strong> on the car and a <strong>display name</strong> for the monitor and voice.</p>
-        <div class="grid-2">
-            <div>
-                <label for="racer-id-input">QR ID (on car)</label>
-                <input type="text" id="racer-id-input" autocomplete="off" placeholder="e.g. 1" maxlength="8">
-            </div>
-            <div>
-                <label for="racer-name-input">Display name</label>
-                <input type="text" id="racer-name-input" autocomplete="off" placeholder="e.g. Buggy 1">
-            </div>
+        <p class="field-hint" style="margin-bottom:4px;">Tape a <strong>bright colored sticker</strong> on each car’s side (orange, pink, lime — all different). Sync the color with the camera before racing.</p>
+        <div>
+            <label for="racer-name-input">Car name</label>
+            <input type="text" id="racer-name-input" autocomplete="off" placeholder="e.g. Buggy 1">
         </div>
         <button type="button" class="btn btn-primary" id="btn-add-racer">Add racer</button>
 
         <h2 style="margin-top:8px;">Registered <span id="racer-count" style="color:var(--text-muted);">(0)</span></h2>
         <div class="racer-list" id="racer-list">
-            <div class="lap-empty">No racers yet — add at least one before race day.</div>
+            <div class="lap-empty">No racers yet — add cars and sync their colors.</div>
         </div>
-
-        <h2 style="margin-top:16px;">Print markers</h2>
-        <p class="field-hint">Print codes <strong>at least 10 cm / 4 in square</strong> on the side of the car. For fast cars, use <strong>Manual gate mode</strong> in Settings instead.</p>
-        <div id="qrcode-container" class="hidden" style="text-align:center;margin-top:12px;">
-            <div id="qrcode-output"></div>
-            <p class="field-hint" id="qrcode-preview-label" style="margin-top:8px;"></p>
-        </div>
-        <div class="qr-list" id="qr-saved-list"></div>
     </div>
 
     <!-- Settings tab -->
@@ -593,10 +616,16 @@
                 <p class="field-hint">Min time between laps 2, 3, 4…</p>
             </div>
         </div>
-        <div>
-            <label for="setting-debounce">Re-trigger cooldown (sec)</label>
-            <input type="number" id="setting-debounce" min="0.5" max="30" step="0.5" value="1.5">
-            <p class="field-hint">Same car can’t fire twice within this window (anti-flicker).</p>
+        <div class="grid-2">
+            <div>
+                <label for="setting-debounce">Re-trigger cooldown (sec)</label>
+                <input type="number" id="setting-debounce" min="0.5" max="30" step="0.5" value="1.5">
+            </div>
+            <div>
+                <label for="setting-color-threshold">Color match %</label>
+                <input type="number" id="setting-color-threshold" min="3" max="40" step="1" value="8">
+                <p class="field-hint">Lower = more sensitive. Try 6–12.</p>
+            </div>
         </div>
         <div>
             <label for="setting-countdown">Race countdown (sec)</label>
@@ -696,8 +725,8 @@
 
     <!-- SENSOR -->
     <div id="camera-view" class="hidden">
-        <div class="mode-badge" id="gate-mode-badge">QR scan mode</div>
-        <div id="qr-gate-panel">
+        <div class="mode-badge" id="gate-mode-badge">Color gate mode</div>
+        <div id="color-gate-panel">
             <label>Finish-line camera — aim gate box at the line</label>
             <div class="video-wrap">
                 <video id="video-feed" playsinline muted></video>
@@ -707,7 +736,7 @@
             <canvas id="hidden-canvas" class="hidden"></canvas>
             <div class="camera-toolbar">
                 <button type="button" class="btn btn-ghost btn-sm" id="btn-torch">Light off</button>
-                <button type="button" class="btn btn-ghost btn-sm" id="btn-detector-info">Detector: …</button>
+                <span class="field-hint" id="color-match-info" style="flex:2;text-align:center;padding-top:8px;">Match: —</span>
             </div>
         </div>
         <div id="manual-gate-panel" class="hidden">
@@ -729,6 +758,22 @@
     </div>
 </div>
 
+<!-- Color calibration modal -->
+<div class="calib-backdrop hidden" id="calib-modal" aria-hidden="true">
+    <h2 style="color:var(--accent-green);text-align:center;">Sync car color</h2>
+    <p class="field-hint" style="text-align:center;max-width:360px;" id="calib-racer-label">Point at the colored tape on the car</p>
+    <div class="video-wrap">
+        <video id="calib-video" playsinline muted></video>
+        <div class="calib-reticle"></div>
+    </div>
+    <canvas id="calib-canvas" class="hidden"></canvas>
+    <div class="calib-preview" id="calib-preview"></div>
+    <div class="calib-actions">
+        <button type="button" class="btn btn-ghost" id="btn-calib-cancel">Cancel</button>
+        <button type="button" class="btn btn-primary" id="btn-calib-capture">Capture color</button>
+    </div>
+</div>
+
 <!-- Countdown modal -->
 <div class="modal-backdrop hidden" id="countdown-modal" aria-hidden="true">
     <div class="modal">
@@ -742,8 +787,8 @@
 (function () {
     'use strict';
 
-    const STORAGE_KEY = 'apextrack-settings-v4';
-    const SCAN_TARGET_WIDTH = 960;
+    const STORAGE_KEY = 'apextrack-settings-v5';
+    const SCAN_TARGET_WIDTH = 640;
     const DEFAULTS = {
         sessionId: 'rc-race-77',
         raceName: '',
@@ -752,6 +797,7 @@
         minLapSec: 2,
         startGraceSec: 3,
         countdownSec: 3,
+        colorThreshold: 0.08,
         ttsEnabled: true,
         soundEnabled: true,
         mirrorCamera: true,
@@ -760,11 +806,10 @@
         racers: []
     };
 
-    /** @type {Array<{id: string, name: string}>} sensor-side name lookup */
+    /** @type {Array<{id: string, name: string, color?: {h:number,s:number,v:number,hex:string}}>} */
     let sensorRoster = [];
     let sensorRaceState = 'ready';
-    let sensorRaceStartTime = null;
-    let gateQrVisible = false;
+    let gateCarVisible = false;
     let gateCurrentId = '';
     /** @type {Record<string, number>} */
     let lastSentByCar = {};
@@ -772,11 +817,11 @@
     let scanFps = 0;
     let sentTriggerCount = 0;
     let videoTrack = null;
+    let calibStream = null;
+    let calibTrack = null;
     let torchOn = false;
     let scanLoopActive = false;
-    /** @type {BarcodeDetector | null} */
-    let barcodeDetector = null;
-    let detectorLabel = 'jsQR';
+    let calibratingRacerId = null;
 
     let settings = loadSettings();
     let peer = null;
@@ -800,7 +845,7 @@
         try {
             const raw = localStorage.getItem(STORAGE_KEY);
             if (raw) return normalizeSettings(JSON.parse(raw));
-            for (const key of ['apextrack-settings-v3', 'apextrack-settings-v2', 'apextrack-settings-v1']) {
+            for (const key of ['apextrack-settings-v4', 'apextrack-settings-v3', 'apextrack-settings-v2', 'apextrack-settings-v1']) {
                 const legacy = localStorage.getItem(key);
                 if (legacy) return normalizeSettings(JSON.parse(legacy));
             }
@@ -813,12 +858,19 @@
         if (!Array.isArray(merged.racers)) merged.racers = [];
         if (merged.startGraceSec == null) merged.startGraceSec = DEFAULTS.startGraceSec;
         if (merged.manualGate == null) merged.manualGate = false;
+        if (merged.colorThreshold == null) merged.colorThreshold = DEFAULTS.colorThreshold;
         if (Array.isArray(data.savedMarkers) && !merged.racers.length) {
-            merged.racers = data.savedMarkers.map(id => ({ id: String(id), name: String(id) }));
+            merged.racers = data.savedMarkers.map((id, i) => ({ id: `c${i + 1}`, name: String(id) }));
         }
         merged.racers = merged.racers
             .filter(r => r && r.id)
-            .map(r => ({ id: String(r.id).trim(), name: String(r.name || r.id).trim() }))
+            .map(r => {
+                const racer = { id: String(r.id).trim(), name: String(r.name || r.id).trim() };
+                if (r.color && typeof r.color.h === 'number') {
+                    racer.color = { h: r.color.h, s: r.color.s, v: r.color.v, hex: r.color.hex || hsvToHex(r.color.h, r.color.s, r.color.v) };
+                }
+                return racer;
+            })
             .filter(r => r.id);
         return merged;
     }
@@ -834,6 +886,7 @@
         settings.debounceSec = clamp(parseFloat(document.getElementById('setting-debounce').value) || 1.5, 0.5, 30);
         settings.minLapSec = clamp(parseFloat(document.getElementById('setting-minlap').value) || 2, 1, 120);
         settings.startGraceSec = clamp(parseFloat(document.getElementById('setting-start-grace').value) || 3, 0, 30);
+        settings.colorThreshold = clamp(parseInt(document.getElementById('setting-color-threshold').value, 10) || 8, 3, 40) / 100;
         settings.countdownSec = clamp(parseInt(document.getElementById('setting-countdown').value, 10) || 0, 0, 10);
         settings.ttsEnabled = document.getElementById('setting-tts').checked;
         settings.soundEnabled = document.getElementById('setting-sound').checked;
@@ -851,6 +904,7 @@
         document.getElementById('setting-debounce').value = settings.debounceSec;
         document.getElementById('setting-minlap').value = settings.minLapSec;
         document.getElementById('setting-start-grace').value = settings.startGraceSec;
+        document.getElementById('setting-color-threshold').value = Math.round(settings.colorThreshold * 100);
         document.getElementById('setting-countdown').value = settings.countdownSec;
         document.getElementById('setting-tts').checked = settings.ttsEnabled;
         document.getElementById('setting-sound').checked = settings.soundEnabled;
@@ -858,22 +912,166 @@
         document.getElementById('setting-haptic').checked = settings.hapticEnabled;
         document.getElementById('setting-manual-gate').checked = settings.manualGate;
         renderRacersList();
-        renderRacerQRGrid();
         updateGateModeUI();
+    }
+
+    function nextRacerId() {
+        let n = 1;
+        while (settings.racers.some(r => r.id === `c${n}`)) n++;
+        return `c${n}`;
+    }
+
+    function getActiveRoster() {
+        return sensorRoster.length ? sensorRoster : settings.racers;
+    }
+
+    function getRacersWithColor() {
+        return getActiveRoster().filter(r => r.color && typeof r.color.h === 'number');
+    }
+
+    // --- Color math ---
+
+    function rgbToHsv(r, g, b) {
+        r /= 255; g /= 255; b /= 255;
+        const max = Math.max(r, g, b), min = Math.min(r, g, b);
+        const d = max - min;
+        let h = 0;
+        const s = max === 0 ? 0 : d / max;
+        const v = max;
+        if (d !== 0) {
+            switch (max) {
+                case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
+                case g: h = ((b - r) / d + 2) / 6; break;
+                default: h = ((r - g) / d + 4) / 6; break;
+            }
+        }
+        return { h: h * 360, s, v };
+    }
+
+    function hsvToRgb(h, s, v) {
+        h = ((h % 360) + 360) % 360 / 360;
+        const i = Math.floor(h * 6);
+        const f = h * 6 - i;
+        const p = v * (1 - s);
+        const q = v * (1 - f * s);
+        const t = v * (1 - (1 - f) * s);
+        let r, g, b;
+        switch (i % 6) {
+            case 0: r = v; g = t; b = p; break;
+            case 1: r = q; g = v; b = p; break;
+            case 2: r = p; g = v; b = t; break;
+            case 3: r = p; g = q; b = v; break;
+            case 4: r = t; g = p; b = v; break;
+            default: r = v; g = p; b = q; break;
+        }
+        return { r: Math.round(r * 255), g: Math.round(g * 255), b: Math.round(b * 255) };
+    }
+
+    function hsvToHex(h, s, v) {
+        const { r, g, b } = hsvToRgb(h, s, v);
+        return '#' + [r, g, b].map(x => x.toString(16).padStart(2, '0')).join('');
+    }
+
+    function hueDist(a, b) {
+        let d = Math.abs(a - b) % 360;
+        return d > 180 ? 360 - d : d;
+    }
+
+    function pixelMatchesColor(r, g, b, ref) {
+        const hsv = rgbToHsv(r, g, b);
+        if (hsv.s < 0.18) return false;
+        if (hsv.v < 0.12 || hsv.v > 0.98) return false;
+        const hueTol = ref.s < 0.25 ? 12 : 22;
+        const satTol = 0.28;
+        const valTol = 0.38;
+        if (hueDist(hsv.h, ref.h) > hueTol) return false;
+        if (Math.abs(hsv.s - ref.s) > satTol) return false;
+        if (Math.abs(hsv.v - ref.v) > valTol) return false;
+        return true;
+    }
+
+    function sampleRegionHsv(imageData, x0, y0, w, h) {
+        const { data, width } = imageData;
+        const samples = [];
+        const step = Math.max(1, Math.floor(Math.min(w, h) / 24));
+        for (let y = y0; y < y0 + h; y += step) {
+            for (let x = x0; x < x0 + w; x += step) {
+                const i = (y * width + x) * 4;
+                const hsv = rgbToHsv(data[i], data[i + 1], data[i + 2]);
+                if (hsv.s >= 0.2 && hsv.v >= 0.15 && hsv.v <= 0.95) samples.push(hsv);
+            }
+        }
+        if (!samples.length) return null;
+        samples.sort((a, b) => a.h - b.h);
+        const mid = samples[Math.floor(samples.length / 2)];
+        return { h: mid.h, s: mid.s, v: mid.v, hex: hsvToHex(mid.h, mid.s, mid.v) };
+    }
+
+    function drawGateCrop(video, canvas, ctx) {
+        const vw = video.videoWidth;
+        const vh = video.videoHeight;
+        const cropW = vw * 0.88;
+        const cropH = vh * 0.42;
+        const sx = (vw - cropW) / 2;
+        const sy = (vh - cropH) / 2;
+        canvas.width = SCAN_TARGET_WIDTH;
+        canvas.height = Math.max(1, Math.round(SCAN_TARGET_WIDTH * (cropH / cropW)));
+        ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, canvas.width, canvas.height);
+        return ctx.getImageData(0, 0, canvas.width, canvas.height);
+    }
+
+    function detectColorInGate(imageData) {
+        const roster = getRacersWithColor();
+        if (!roster.length) return null;
+
+        const { data, width, height } = imageData;
+        const scores = {};
+        let colorful = 0;
+
+        for (let y = 0; y < height; y += 2) {
+            for (let x = 0; x < width; x += 2) {
+                const i = (y * width + x) * 4;
+                const r = data[i], g = data[i + 1], b = data[i + 2];
+                const hsv = rgbToHsv(r, g, b);
+                if (hsv.s < 0.18 || hsv.v < 0.12) continue;
+                colorful++;
+                roster.forEach(racer => {
+                    if (pixelMatchesColor(r, g, b, racer.color)) {
+                        scores[racer.id] = (scores[racer.id] || 0) + 1;
+                    }
+                });
+            }
+        }
+
+        if (!colorful) return null;
+
+        let bestId = null;
+        let bestRatio = 0;
+        const threshold = settings.colorThreshold;
+
+        roster.forEach(racer => {
+            const ratio = (scores[racer.id] || 0) / colorful;
+            if (ratio >= threshold && ratio > bestRatio) {
+                bestRatio = ratio;
+                bestId = racer.id;
+            }
+        });
+
+        return bestId ? { carId: bestId, ratio: bestRatio } : null;
     }
 
     function updateGateModeUI() {
         const badge = document.getElementById('gate-mode-badge');
-        const qrPanel = document.getElementById('qr-gate-panel');
+        const colorPanel = document.getElementById('color-gate-panel');
         const manualPanel = document.getElementById('manual-gate-panel');
         if (!badge) return;
         if (settings.manualGate) {
             badge.textContent = 'Manual tap mode';
-            if (qrPanel) qrPanel.classList.add('hidden');
+            if (colorPanel) colorPanel.classList.add('hidden');
             if (manualPanel) manualPanel.classList.remove('hidden');
         } else {
-            badge.textContent = 'QR scan mode';
-            if (qrPanel) qrPanel.classList.remove('hidden');
+            badge.textContent = 'Color gate mode';
+            if (colorPanel) colorPanel.classList.remove('hidden');
             if (manualPanel) manualPanel.classList.add('hidden');
         }
         renderManualGateButtons();
@@ -882,7 +1080,7 @@
     function renderManualGateButtons() {
         const grid = document.getElementById('manual-gate-buttons');
         if (!grid) return;
-        const roster = sensorRoster.length ? sensorRoster : settings.racers;
+        const roster = getActiveRoster();
         if (!roster.length) {
             grid.innerHTML = '<div class="lap-empty">Add racers on the home screen first.</div>';
             return;
@@ -890,14 +1088,12 @@
         grid.innerHTML = roster.map(r => `
             <button type="button" class="manual-gate-btn" data-manual-id="${escapeHtml(r.id)}">
                 ${escapeHtml(r.name)}
-                <small>ID ${escapeHtml(r.id)}</small>
             </button>`).join('');
         grid.querySelectorAll('[data-manual-id]').forEach(btn => {
             btn.addEventListener('click', () => {
-                const id = btn.getAttribute('data-manual-id');
-                gateQrVisible = false;
+                gateCarVisible = false;
                 gateCurrentId = '';
-                maybeSendGateTrigger(id);
+                maybeSendGateTrigger(btn.getAttribute('data-manual-id'));
             });
         });
     }
@@ -1133,7 +1329,7 @@
                     <div class="pos-badge ${posClass}">${car.lapCount > 0 ? pos : '·'}</div>
                     <div>
                         <div class="car-name">${escapeHtml(car.name)}</div>
-                        <div class="car-meta">${waiting ? 'Ready • ID ' + escapeHtml(car.id) : 'Best ' + (car.bestLap < Infinity ? formatTime(car.bestLap) : '—')}</div>
+                        <div class="car-meta">${waiting ? 'Ready' : 'Best ' + (car.bestLap < Infinity ? formatTime(car.bestLap) : '—')}</div>
                     </div>
                     <div class="car-laps">
                         ${car.lapCount}<span style="color:var(--text-muted);font-weight:400;">/${settings.totalLaps}</span>
@@ -1341,6 +1537,7 @@
             debounceSec: settings.debounceSec,
             minLapSec: settings.minLapSec,
             startGraceSec: settings.startGraceSec,
+            colorThreshold: settings.colorThreshold,
             raceStartTime: raceStartTime,
             racers: settings.racers
         };
@@ -1474,16 +1671,13 @@
             settings.debounceSec = data.settings.debounceSec ?? settings.debounceSec;
             settings.minLapSec = data.settings.minLapSec ?? settings.minLapSec;
             settings.startGraceSec = data.settings.startGraceSec ?? settings.startGraceSec;
-            if (data.settings.raceStartTime) sensorRaceStartTime = data.settings.raceStartTime;
+            if (data.settings.colorThreshold != null) settings.colorThreshold = data.settings.colorThreshold;
             if (Array.isArray(data.settings.racers)) sensorRoster = data.settings.racers;
         }
         if (data.state === 'racing') {
             lastSentByCar = {};
-            gateQrVisible = false;
+            gateCarVisible = false;
             gateCurrentId = '';
-        }
-        if (data.state === 'ready' || data.state === 'finished') {
-            sensorRaceStartTime = null;
         }
         updateSensorStatusUI();
         renderManualGateButtons();
@@ -1547,79 +1741,44 @@
         return name === carId ? carId : `${name} (${carId})`;
     }
 
-    function initBarcodeDetector() {
-        if (typeof BarcodeDetector === 'undefined') return null;
-        try {
-            return new BarcodeDetector({ formats: ['qr_code'] });
-        } catch (_) {
-            return null;
-        }
-    }
-
-    function drawFinishLineCrop(video, canvas, ctx) {
-        const vw = video.videoWidth;
-        const vh = video.videoHeight;
-        const cropW = vw * 0.88;
-        const cropH = vh * 0.42;
-        const sx = (vw - cropW) / 2;
-        const sy = (vh - cropH) / 2;
-        canvas.width = SCAN_TARGET_WIDTH;
-        canvas.height = Math.max(1, Math.round(SCAN_TARGET_WIDTH * (cropH / cropW)));
-        ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, canvas.width, canvas.height);
-        return ctx.getImageData(0, 0, canvas.width, canvas.height);
-    }
-
-    async function detectQrFromVideo(video, canvas, ctx) {
-        if (barcodeDetector) {
-            try {
-                const codes = await barcodeDetector.detect(video);
-                if (codes && codes.length) {
-                    const id = normalizeCarId(codes[0].rawValue);
-                    if (id) return id;
-                }
-            } catch (_) { /* fall through */ }
-        }
-
-        const imageData = drawFinishLineCrop(video, canvas, ctx);
-        let code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: 'dontInvert' });
-        if (!code) {
-            code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: 'onlyInvert' });
-        }
-        return code && code.data ? normalizeCarId(code.data) : null;
-    }
-
-    function handleQrDetection(carId, video) {
-        if (!carId) {
-            video.classList.remove('qr-locked');
-            gateQrVisible = false;
+    function handleColorDetection(result, video) {
+        const info = document.getElementById('color-match-info');
+        if (!result) {
+            video.classList.remove('gate-locked');
+            gateCarVisible = false;
             gateCurrentId = '';
+            if (info) info.textContent = 'Match: —';
             return;
         }
 
-        video.classList.add('qr-locked');
-        if (!gateQrVisible) {
+        const { carId, ratio } = result;
+        video.classList.add('gate-locked');
+        if (info) info.textContent = `Match: ${Math.round(ratio * 100)}% · ${resolveRacerName(carId)}`;
+
+        if (!gateCarVisible) {
             maybeSendGateTrigger(carId);
         } else if (gateCurrentId !== carId) {
             maybeSendGateTrigger(carId);
         }
-        gateQrVisible = true;
+        gateCarVisible = true;
         gateCurrentId = carId;
         document.getElementById('last-scan').textContent = formatScanLabel(carId);
     }
 
     async function toggleTorch() {
-        if (!videoTrack) {
+        const track = videoTrack || calibTrack;
+        if (!track) {
             showToast('Camera not ready');
             return;
         }
-        const caps = videoTrack.getCapabilities?.();
+        const caps = track.getCapabilities?.();
         if (!caps || !caps.torch) {
             showToast('Torch not supported on this phone');
             return;
         }
         torchOn = !torchOn;
         try {
-            await videoTrack.applyConstraints({ advanced: [{ torch: torchOn }] });
+            await track.applyConstraints({ advanced: [{ torch: torchOn }] });
             document.getElementById('btn-torch').textContent = torchOn ? 'Light on' : 'Light off';
         } catch (_) {
             showToast('Could not toggle light');
@@ -1634,6 +1793,10 @@
             return;
         }
 
+        if (!getRacersWithColor().length) {
+            updateStatus('No synced colors — sync cars on Racers tab first', 'connected');
+        }
+
         const video = document.getElementById('video-feed');
         const canvas = document.getElementById('hidden-canvas');
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -1641,39 +1804,31 @@
         if (settings.mirrorCamera) video.classList.add('mirror');
         else video.classList.remove('mirror');
 
-        barcodeDetector = initBarcodeDetector();
-        detectorLabel = barcodeDetector ? 'Native (fast)' : 'jsQR crop';
-        const detBtn = document.getElementById('btn-detector-info');
-        if (detBtn) detBtn.textContent = detectorLabel;
-
         updateSensorStatusUI();
         updateGateModeUI();
         sentTriggerCount = 0;
         scanFrames = 0;
         scanLoopActive = true;
         let fpsLastTick = Date.now();
-        let detectInFlight = false;
 
-        const constraints = {
+        navigator.mediaDevices.getUserMedia({
             video: {
                 facingMode: 'environment',
-                width: { ideal: 1920 },
-                height: { ideal: 1080 },
+                width: { ideal: 1280 },
+                height: { ideal: 720 },
                 frameRate: { ideal: 60, min: 24 }
             },
             audio: false
-        };
-
-        navigator.mediaDevices.getUserMedia(constraints).then(stream => {
+        }).then(stream => {
             video.srcObject = stream;
             videoTrack = stream.getVideoTracks()[0] || null;
             video.setAttribute('playsinline', true);
             return video.play();
         }).then(() => {
-            const scan = async () => {
+            const scan = () => {
                 if (!scanLoopActive) return;
                 requestAnimationFrame(scan);
-                if (!conn || !conn.open || detectInFlight) return;
+                if (!conn || !conn.open) return;
 
                 scanFrames++;
                 const fpsNow = Date.now();
@@ -1687,44 +1842,95 @@
 
                 if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
 
-                detectInFlight = true;
-                try {
-                    const carId = await detectQrFromVideo(video, canvas, ctx);
-                    handleQrDetection(carId, video);
-                } finally {
-                    detectInFlight = false;
-                }
+                const imageData = drawGateCrop(video, canvas, ctx);
+                handleColorDetection(detectColorInGate(imageData), video);
             };
             requestAnimationFrame(scan);
-        }).catch(() => {
-            navigator.mediaDevices.getUserMedia({
-                video: { facingMode: 'environment', frameRate: { ideal: 30 } },
-                audio: false
-            }).then(stream => {
-                video.srcObject = stream;
-                videoTrack = stream.getVideoTracks()[0] || null;
-                video.setAttribute('playsinline', true);
-                return video.play();
-            }).then(() => {
-                const scan = async () => {
-                    if (!scanLoopActive) return;
-                    requestAnimationFrame(scan);
-                    if (!conn || !conn.open || detectInFlight) return;
-                    if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
-                    detectInFlight = true;
-                    try {
-                        handleQrDetection(await detectQrFromVideo(video, canvas, ctx), video);
-                    } finally {
-                        detectInFlight = false;
-                    }
-                };
-                requestAnimationFrame(scan);
-            }).catch(err => alert('Camera access failed: ' + err.message));
+        }).catch(err => alert('Camera access failed: ' + err.message));
+    }
+
+    function openColorCalib(racerId) {
+        const racer = settings.racers.find(r => r.id === racerId);
+        if (!racer) return;
+
+        calibratingRacerId = racerId;
+        document.getElementById('calib-racer-label').textContent = `Sync color for ${racer.name} — fill the box with the tape`;
+        document.getElementById('calib-preview').style.background = racer.color?.hex || 'transparent';
+        document.getElementById('calib-modal').classList.remove('hidden');
+
+        const video = document.getElementById('calib-video');
+        navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+            audio: false
+        }).then(stream => {
+            calibStream = stream;
+            calibTrack = stream.getVideoTracks()[0] || null;
+            video.srcObject = stream;
+            video.setAttribute('playsinline', true);
+            return video.play();
+        }).catch(err => {
+            closeColorCalib();
+            alert('Camera access failed: ' + err.message);
         });
+    }
+
+    function closeColorCalib() {
+        document.getElementById('calib-modal').classList.add('hidden');
+        calibratingRacerId = null;
+        if (calibStream) {
+            calibStream.getTracks().forEach(t => t.stop());
+            calibStream = null;
+            calibTrack = null;
+        }
+        document.getElementById('calib-video').srcObject = null;
+    }
+
+    function captureCalibColor() {
+        if (!calibratingRacerId) return;
+        const video = document.getElementById('calib-video');
+        const canvas = document.getElementById('calib-canvas');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+        if (video.readyState !== video.HAVE_ENOUGH_DATA) {
+            showToast('Camera not ready — wait a moment');
+            return;
+        }
+
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        ctx.drawImage(video, 0, 0);
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
+        const rw = Math.round(canvas.width * 0.28);
+        const rh = Math.round(canvas.height * 0.28);
+        const rx = Math.round((canvas.width - rw) / 2);
+        const ry = Math.round((canvas.height - rh) / 2);
+        const color = sampleRegionHsv(imageData, rx, ry, rw, rh);
+
+        if (!color) {
+            alert('Could not read a strong color. Use bright tape and good lighting.');
+            return;
+        }
+
+        const racer = settings.racers.find(r => r.id === calibratingRacerId);
+        if (!racer) return;
+
+        const conflict = settings.racers.find(r =>
+            r.id !== racer.id && r.color && hueDist(r.color.h, color.h) < 18 && Math.abs(r.color.s - color.s) < 0.2
+        );
+        if (conflict && !confirm(`This looks similar to ${conflict.name}. Use a more distinct color? Capture anyway?`)) return;
+
+        racer.color = color;
+        saveSettings();
+        document.getElementById('calib-preview').style.background = color.hex;
+        renderRacersList();
+        showToast(`${racer.name} color saved`);
+        closeColorCalib();
     }
 
     function teardownSession(reload) {
         scanLoopActive = false;
+        closeColorCalib();
         if (videoTrack) {
             try { videoTrack.stop(); } catch (_) {}
             videoTrack = null;
@@ -1742,31 +1948,22 @@
         }
     }
 
-    // --- Racers & QR markers ---
+    // --- Racers ---
 
     function addRacer() {
-        const id = document.getElementById('racer-id-input').value.trim();
         const name = document.getElementById('racer-name-input').value.trim();
-        if (!id) { alert('Enter a QR ID — keep it short, e.g. "1" or "B1".'); return; }
-        if (!name) { alert('Enter a display name for announcements and the leaderboard.'); return; }
-        if (settings.racers.some(r => r.id.toLowerCase() === id.toLowerCase())) {
-            alert('That QR ID is already registered.');
-            return;
-        }
-        settings.racers.push({ id, name });
+        if (!name) { alert('Enter a car name.'); return; }
+        settings.racers.push({ id: nextRacerId(), name });
         saveSettings();
-        document.getElementById('racer-id-input').value = '';
         document.getElementById('racer-name-input').value = '';
         renderRacersList();
-        renderRacerQRGrid();
-        showToast(`${name} added`);
+        showToast(`${name} added — sync color next`);
     }
 
     function removeRacer(id) {
         settings.racers = settings.racers.filter(r => r.id !== id);
         saveSettings();
         renderRacersList();
-        renderRacerQRGrid();
     }
 
     function renderRacersList() {
@@ -1775,74 +1972,35 @@
         countEl.textContent = `(${settings.racers.length})`;
 
         if (!settings.racers.length) {
-            list.innerHTML = '<div class="lap-empty">No racers yet — add at least one before race day.</div>';
+            list.innerHTML = '<div class="lap-empty">No racers yet — add cars and sync their colors.</div>';
             return;
         }
 
-        list.innerHTML = settings.racers.map(r => `
+        list.innerHTML = settings.racers.map(r => {
+            const swatchStyle = r.color ? `background:${r.color.hex};` : '';
+            const swatchClass = r.color ? 'color-swatch' : 'color-swatch unset';
+            const meta = r.color ? 'Color synced' : 'No color — tap Sync';
+            return `
             <div class="racer-row">
-                <div class="racer-id-badge">${escapeHtml(r.id)}</div>
+                <div class="${swatchClass}" style="${swatchStyle}"></div>
                 <div>
                     <div class="car-name">${escapeHtml(r.name)}</div>
-                    <div class="car-meta">QR scans as “${escapeHtml(r.id)}”</div>
+                    <div class="car-meta">${meta}</div>
                 </div>
                 <div class="racer-actions">
-                    <button type="button" class="btn btn-ghost btn-sm" data-qr-id="${escapeHtml(r.id)}" title="Preview QR">QR</button>
+                    <button type="button" class="btn btn-primary btn-sm" data-sync-id="${escapeHtml(r.id)}" title="Sync color">Sync</button>
                     <button type="button" class="btn btn-danger btn-sm" data-remove-id="${escapeHtml(r.id)}" title="Remove">×</button>
                 </div>
-            </div>`).join('');
+            </div>`;
+        }).join('');
 
-        list.querySelectorAll('[data-qr-id]').forEach(btn => {
-            btn.addEventListener('click', () => previewQR(btn.getAttribute('data-qr-id')));
+        list.querySelectorAll('[data-sync-id]').forEach(btn => {
+            btn.addEventListener('click', () => openColorCalib(btn.getAttribute('data-sync-id')));
         });
         list.querySelectorAll('[data-remove-id]').forEach(btn => {
             btn.addEventListener('click', () => {
                 const id = btn.getAttribute('data-remove-id');
                 if (confirm(`Remove racer ${id}?`)) removeRacer(id);
-            });
-        });
-    }
-
-    function previewQR(id) {
-        const racer = settings.racers.find(r => r.id === id);
-        const container = document.getElementById('qrcode-container');
-        const output = document.getElementById('qrcode-output');
-        const label = document.getElementById('qrcode-preview-label');
-        output.innerHTML = '';
-        container.classList.remove('hidden');
-        label.textContent = racer ? `${racer.name} — QR ID “${racer.id}”` : `QR ID “${id}”`;
-
-        new QRCode(output, {
-            text: id,
-            width: 320,
-            height: 320,
-            colorDark: '#000000',
-            colorLight: '#ffffff',
-            correctLevel: QRCode.CorrectLevel.L
-        });
-        container.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    }
-
-    function renderRacerQRGrid() {
-        const list = document.getElementById('qr-saved-list');
-        list.innerHTML = '';
-        settings.racers.forEach(r => {
-            const card = document.createElement('div');
-            card.className = 'qr-card';
-            const mount = document.createElement('div');
-            card.appendChild(mount);
-            const label = document.createElement('div');
-            label.className = 'qr-card-label';
-            label.textContent = `${r.id} · ${r.name}`;
-            card.appendChild(label);
-            list.appendChild(card);
-            new QRCode(mount, {
-                text: r.id,
-                width: 180,
-                height: 180,
-                colorDark: '#000000',
-                colorLight: '#ffffff',
-                correctLevel: QRCode.CorrectLevel.L
             });
         });
     }
@@ -1864,11 +2022,10 @@
     document.getElementById('btn-export').addEventListener('click', exportResults);
     document.getElementById('btn-add-racer').addEventListener('click', addRacer);
     document.getElementById('btn-torch').addEventListener('click', toggleTorch);
+    document.getElementById('btn-calib-cancel').addEventListener('click', closeColorCalib);
+    document.getElementById('btn-calib-capture').addEventListener('click', captureCalibColor);
     document.getElementById('racer-name-input').addEventListener('keydown', e => {
         if (e.key === 'Enter') addRacer();
-    });
-    document.getElementById('racer-id-input').addEventListener('keydown', e => {
-        if (e.key === 'Enter') document.getElementById('racer-name-input').focus();
     });
 
     document.getElementById('btn-reset-settings').addEventListener('click', () => {
@@ -1882,7 +2039,7 @@
     });
 
     ['session-id-input', 'race-name-input', 'race-laps-input',
-     'setting-debounce', 'setting-minlap', 'setting-start-grace', 'setting-countdown',
+     'setting-debounce', 'setting-minlap', 'setting-start-grace', 'setting-color-threshold', 'setting-countdown',
      'setting-tts', 'setting-sound', 'setting-mirror', 'setting-haptic', 'setting-manual-gate'
     ].forEach(id => {
         document.getElementById(id).addEventListener('change', () => readSettingsFromUI());
