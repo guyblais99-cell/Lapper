@@ -79,6 +79,32 @@
         }
         .brand-sub { font-size: 0.7rem; color: var(--text-muted); letter-spacing: 1px; text-transform: uppercase; }
 
+        .auth-chip {
+            font-size: 0.65rem;
+            color: var(--accent-green);
+            background: rgba(0, 255, 136, 0.1);
+            border: 1px solid rgba(0, 255, 136, 0.25);
+            border-radius: 999px;
+            padding: 4px 10px;
+            max-width: 140px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .auth-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .auth-status {
+            padding: 12px;
+            border-radius: var(--radius);
+            background: var(--panel-elevated);
+            border: 1px solid var(--border);
+        }
+        .auth-status strong { color: var(--accent-green); display: block; margin-bottom: 4px; }
+
         .icon-btn {
             background: var(--panel-bg);
             border: 1px solid var(--border);
@@ -577,6 +603,7 @@
         <div class="brand-title">ApexTrack</div>
         <div class="brand-sub">Live RC Color Gate</div>
     </div>
+    <div class="auth-chip hidden" id="header-auth-chip" title="Signed in"></div>
     <button type="button" class="icon-btn hidden" id="btn-back" title="Exit session" aria-label="Exit session">←</button>
 </header>
 
@@ -586,6 +613,7 @@
         <button type="button" class="tab active" data-tab="race" role="tab">Race</button>
         <button type="button" class="tab" data-tab="racers" role="tab">Racers</button>
         <button type="button" class="tab" data-tab="settings" role="tab">Settings</button>
+        <button type="button" class="tab" data-tab="account" role="tab">Account</button>
     </div>
 
     <!-- Race tab -->
@@ -697,6 +725,39 @@
         </div>
 
         <button type="button" class="btn btn-ghost btn-sm" id="btn-reset-settings">Reset settings to defaults</button>
+    </div>
+
+    <!-- Account tab -->
+    <div class="tab-panel" id="tab-account" role="tabpanel">
+        <div class="auth-panel">
+            <p class="field-hint">Sign in to save your cars, colors, and settings to your account. They sync to any phone or tablet you log into.</p>
+
+            <div id="auth-signed-out">
+                <div>
+                    <label for="auth-email">Email</label>
+                    <input type="email" id="auth-email" autocomplete="username" placeholder="you@example.com">
+                </div>
+                <div>
+                    <label for="auth-password">Password</label>
+                    <input type="password" id="auth-password" autocomplete="current-password" placeholder="At least 6 characters">
+                </div>
+                <div class="action-bar">
+                    <button type="button" class="btn btn-primary" id="btn-auth-signin">Sign in</button>
+                    <button type="button" class="btn btn-ghost" id="btn-auth-signup">Create account</button>
+                </div>
+            </div>
+
+            <div id="auth-signed-in" class="hidden">
+                <div class="auth-status">
+                    <strong>Signed in</strong>
+                    <span id="auth-user-email">—</span>
+                    <p class="field-hint" style="margin-top:8px;">Your racers and settings sync to the cloud automatically.</p>
+                </div>
+                <button type="button" class="btn btn-ghost" id="btn-auth-signout">Sign out</button>
+            </div>
+
+            <p class="field-hint warn" id="auth-error"></p>
+        </div>
     </div>
 </div>
 
@@ -870,6 +931,8 @@
     let lastColorPeek = null;
 
     let settings = loadSettings();
+    let authUser = null;
+    let cloudSaveTimer = null;
     let sessionRef = null;
     let metaRef = null;
     let triggersRef = null;
@@ -945,6 +1008,169 @@
 
     function saveSettings() {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+        scheduleCloudSave();
+    }
+
+    function profilePayload() {
+        return {
+            sessionId: settings.sessionId,
+            raceName: settings.raceName,
+            totalLaps: settings.totalLaps,
+            debounceSec: settings.debounceSec,
+            minLapSec: settings.minLapSec,
+            startGraceSec: settings.startGraceSec,
+            countdownSec: settings.countdownSec,
+            colorThreshold: settings.colorThreshold,
+            motionTrigger: settings.motionTrigger,
+            ttsEnabled: settings.ttsEnabled,
+            soundEnabled: settings.soundEnabled,
+            mirrorCamera: settings.mirrorCamera,
+            hapticEnabled: settings.hapticEnabled,
+            manualGate: settings.manualGate,
+            racers: settings.racers,
+            updatedAt: Date.now()
+        };
+    }
+
+    function userProfilePath(uid) {
+        return 'users/' + uid + '/profile';
+    }
+
+    function scheduleCloudSave() {
+        if (!authUser) return;
+        clearTimeout(cloudSaveTimer);
+        cloudSaveTimer = setTimeout(() => {
+            pushUserProfileToCloud().catch(err => console.error('Cloud save failed', err));
+        }, 600);
+    }
+
+    async function pushUserProfileToCloud() {
+        if (!authUser) return;
+        await firebase.database().ref(userProfilePath(authUser.uid)).set(profilePayload());
+    }
+
+    async function loadUserProfileFromCloud(uid) {
+        const snap = await firebase.database().ref(userProfilePath(uid)).once('value');
+        if (snap.exists()) {
+            settings = normalizeSettings(snap.val());
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+            applySettingsToUI();
+            return;
+        }
+        await pushUserProfileToCloud();
+    }
+
+    function setAuthError(msg) {
+        const el = document.getElementById('auth-error');
+        if (!el) return;
+        el.textContent = msg || '';
+    }
+
+    function updateAuthUI() {
+        const signedIn = document.getElementById('auth-signed-in');
+        const signedOut = document.getElementById('auth-signed-out');
+        const emailEl = document.getElementById('auth-user-email');
+        const chip = document.getElementById('header-auth-chip');
+        if (authUser) {
+            signedIn.classList.remove('hidden');
+            signedOut.classList.add('hidden');
+            emailEl.textContent = authUser.email || authUser.uid;
+            chip.textContent = authUser.email || 'Signed in';
+            chip.classList.remove('hidden');
+            chip.title = 'Signed in as ' + (authUser.email || authUser.uid);
+        } else {
+            signedIn.classList.add('hidden');
+            signedOut.classList.remove('hidden');
+            chip.classList.add('hidden');
+        }
+    }
+
+    function switchToAccountTab() {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+        const tab = document.querySelector('.tab[data-tab="account"]');
+        if (tab) tab.classList.add('active');
+        const panel = document.getElementById('tab-account');
+        if (panel) panel.classList.add('active');
+    }
+
+    function initAuth() {
+        return new Promise(resolve => {
+            firebase.auth().onAuthStateChanged(async user => {
+                authUser = user && user.email ? user : null;
+                updateAuthUI();
+                setAuthError('');
+                if (authUser) {
+                    try {
+                        await loadUserProfileFromCloud(authUser.uid);
+                    } catch (err) {
+                        console.error(err);
+                        setAuthError('Could not load cloud profile — using this device for now.');
+                    }
+                }
+                resolve();
+            });
+        });
+    }
+
+    async function signInWithEmail() {
+        setAuthError('');
+        const email = document.getElementById('auth-email').value.trim();
+        const password = document.getElementById('auth-password').value;
+        if (!email || !password) {
+            setAuthError('Enter email and password.');
+            return;
+        }
+        try {
+            await firebase.auth().signInWithEmailAndPassword(email, password);
+            showToast('Signed in');
+        } catch (err) {
+            setAuthError(formatAuthError(err));
+        }
+    }
+
+    async function signUpWithEmail() {
+        setAuthError('');
+        const email = document.getElementById('auth-email').value.trim();
+        const password = document.getElementById('auth-password').value;
+        if (!email || !password) {
+            setAuthError('Enter email and password.');
+            return;
+        }
+        if (password.length < 6) {
+            setAuthError('Password must be at least 6 characters.');
+            return;
+        }
+        try {
+            await firebase.auth().createUserWithEmailAndPassword(email, password);
+            showToast('Account created');
+        } catch (err) {
+            setAuthError(formatAuthError(err));
+        }
+    }
+
+    async function signOutUser() {
+        setAuthError('');
+        try {
+            await firebase.auth().signOut();
+            showToast('Signed out');
+        } catch (err) {
+            setAuthError(formatAuthError(err));
+        }
+    }
+
+    function formatAuthError(err) {
+        const code = err && err.code ? err.code : '';
+        if (code === 'auth/email-already-in-use') return 'That email already has an account — try Sign in.';
+        if (code === 'auth/invalid-email') return 'Invalid email address.';
+        if (code === 'auth/weak-password') return 'Password must be at least 6 characters.';
+        if (code === 'auth/user-not-found' || code === 'auth/wrong-password' || code === 'auth/invalid-credential') {
+            return 'Wrong email or password.';
+        }
+        if (code === 'auth/operation-not-allowed') {
+            return 'Email sign-in is not enabled. In Firebase Console → Authentication → Sign-in method → enable Email/Password.';
+        }
+        return (err && err.message) ? err.message : 'Sign-in failed.';
     }
 
     function applyLiveVideoMirror() {
@@ -1777,16 +2003,16 @@
 
     async function ensureFirebaseAuth() {
         if (typeof firebase === 'undefined') throw new Error('Firebase failed to load');
-        if (!firebase.auth().currentUser) await firebase.auth().signInAnonymously();
-        if (!firebase.auth().currentUser) {
-            throw new Error('Anonymous sign-in failed — enable Anonymous Auth in Firebase Console.');
+        const user = firebase.auth().currentUser;
+        if (!user || !user.email) {
+            throw new Error('Please sign in on the Account tab first.');
         }
     }
 
     function formatFirebaseError(err) {
         const msg = err && err.message ? err.message : String(err);
         if (msg.includes('permission_denied')) {
-            return 'Firebase permission denied. Publish database.rules.json to your project (Firebase Console → Realtime Database → Rules), including the apextrack/ paths. Also confirm Authentication → Anonymous is enabled.';
+            return 'Firebase permission denied. Publish database.rules.json (users/ and apextrack/ paths). Enable Email/Password under Authentication.';
         }
         return msg;
     }
@@ -1922,6 +2148,11 @@
         sessionId = settings.sessionId;
         if (!sessionId) {
             alert('Please enter a room / session ID.');
+            return;
+        }
+        if (!authUser) {
+            alert('Sign in on the Account tab to use your synced cars and settings.');
+            switchToAccountTab();
             return;
         }
 
@@ -2436,7 +2667,19 @@
         document.getElementById(id).addEventListener('change', () => readSettingsFromUI());
     });
 
+    document.getElementById('btn-auth-signin').addEventListener('click', signInWithEmail);
+    document.getElementById('btn-auth-signup').addEventListener('click', signUpWithEmail);
+    document.getElementById('btn-auth-signout').addEventListener('click', signOutUser);
+    document.getElementById('auth-password').addEventListener('keydown', e => {
+        if (e.key === 'Enter') signInWithEmail();
+    });
+
     applySettingsToUI();
+
+    initAuth().catch(err => {
+        console.error(err);
+        setAuthError('Could not connect to sign-in service.');
+    });
 
     window.addEventListener('pagehide', releaseMonitorLock);
     window.addEventListener('beforeunload', releaseMonitorLock);
