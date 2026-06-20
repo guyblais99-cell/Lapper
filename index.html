@@ -824,6 +824,8 @@
     const MOTION_CELL_DELTA = 22;
     const MOTION_BURST_MS = 380;
     const GATE_LATCH_MS = 220;
+    const MONITOR_STALE_MS = 45000;
+    const MONITOR_HEARTBEAT_MS = 20000;
     const DEFAULTS = {
         sessionId: 'rc-race-77',
         raceName: '',
@@ -832,7 +834,7 @@
         minLapSec: 2,
         startGraceSec: 3,
         countdownSec: 3,
-        colorThreshold: 0.06,
+        colorThreshold: 0.035,
         motionTrigger: 0.12,
         ttsEnabled: true,
         soundEnabled: true,
@@ -865,6 +867,7 @@
     /** @type {ImageData[]} */
     let gateFrameBuffer = [];
     let gateClearTimer = null;
+    let lastColorPeek = null;
 
     let settings = loadSettings();
     let sessionRef = null;
@@ -1075,11 +1078,11 @@
 
     function pixelMatchesColor(r, g, b, ref, wide) {
         const hsv = rgbToHsv(r, g, b);
-        if (hsv.s < (wide ? 0.12 : 0.18)) return false;
-        if (hsv.v < 0.1 || hsv.v > 0.99) return false;
-        const hueTol = wide ? 32 : (ref.s < 0.25 ? 14 : 24);
-        const satTol = wide ? 0.42 : 0.28;
-        const valTol = wide ? 0.48 : 0.38;
+        if (hsv.s < (wide ? 0.08 : 0.12)) return false;
+        if (hsv.v < 0.08 || hsv.v > 0.995) return false;
+        const hueTol = wide ? 42 : 30;
+        const satTol = wide ? 0.55 : 0.4;
+        const valTol = wide ? 0.58 : 0.45;
         if (hueDist(hsv.h, ref.h) > hueTol) return false;
         if (Math.abs(hsv.s - ref.s) > satTol) return false;
         if (Math.abs(hsv.v - ref.v) > valTol) return false;
@@ -1177,19 +1180,38 @@
             }
         }
 
-        if (!colorful) return null;
+        if (!colorful) {
+            lastColorPeek = null;
+            return null;
+        }
 
         let bestId = null;
         let bestRatio = 0;
+        let bestPixels = 0;
         roster.forEach(racer => {
-            const ratio = (scores[racer.id] || 0) / colorful;
-            if (ratio >= threshold && ratio > bestRatio) {
+            const pixels = scores[racer.id] || 0;
+            const ratio = pixels / colorful;
+            if (ratio > bestRatio) {
                 bestRatio = ratio;
                 bestId = racer.id;
+                bestPixels = pixels;
             }
         });
 
-        return bestId ? { carId: bestId, ratio: bestRatio, burst: wide } : null;
+        const needRatio = threshold;
+        const needPixels = wide ? 12 : 24;
+        lastColorPeek = bestId ? {
+            carId: bestId,
+            ratio: bestRatio,
+            pixels: bestPixels,
+            threshold: needRatio,
+            colorful
+        } : null;
+
+        if (bestId && (bestRatio >= needRatio || bestPixels >= needPixels)) {
+            return { carId: bestId, ratio: bestRatio, burst: wide };
+        }
+        return null;
     }
 
     function detectColorInGate(imageData, options) {
@@ -1199,7 +1221,7 @@
 
         const step = aggressive ? 1 : 2;
         const threshold = aggressive
-            ? Math.max(0.03, settings.colorThreshold * 0.45)
+            ? Math.max(0.02, settings.colorThreshold * 0.5)
             : settings.colorThreshold;
         const wide = !!aggressive;
 
@@ -1228,9 +1250,7 @@
         const motionEl = document.getElementById('motion-level');
         const hasMotion = lastMotionRatio >= motionTrigger;
         const aggressive = now < motionBurstUntil;
-        const isRacing = sensorRaceState === 'racing';
-        // Before the race, scan continuously so you can verify tape colors in the green box.
-        const scanningHard = hasMotion || aggressive || !isRacing;
+        const scanningHard = true;
         if (motionEl) {
             motionEl.textContent = hasMotion ? 'YES' : (scanningHard ? '…' : '—');
             motionEl.classList.toggle('motion-hot', hasMotion || scanningHard);
@@ -1771,6 +1791,17 @@
         return msg;
     }
 
+    function isMonitorLockHeld(meta, now) {
+        if (!meta || !meta.monitorId) return false;
+        const lastBeat = meta.monitorAt || meta.updatedAt || 0;
+        return (now - lastBeat) < MONITOR_STALE_MS;
+    }
+
+    function releaseMonitorLock() {
+        if (myRole !== 'monitor' || !metaRef || !monitorId) return;
+        metaRef.update({ monitorUntil: 0, monitorAt: 0 }).catch(() => {});
+    }
+
     function sensorIsOnline() {
         return !!(sensorLastSeen && (Date.now() - sensorLastSeen < 20000));
     }
@@ -1801,8 +1832,8 @@
         const snap = await metaRef.once('value');
         const meta = snap.val();
         const now = Date.now();
-        if (meta && meta.monitorId && meta.monitorUntil > now && meta.monitorId !== monitorId) {
-            alert('This room is already in use on another monitor. Choose a different session ID.');
+        if (isMonitorLockHeld(meta, now) && meta.monitorId !== monitorId) {
+            alert('This room is already in use on another monitor. Wait ~45 seconds after closing the other one, or use a different room ID.');
             teardownSession(true);
             return;
         }
@@ -1811,7 +1842,8 @@
 
         await metaRef.set({
             monitorId,
-            monitorUntil: now + 300000,
+            monitorUntil: now + MONITOR_STALE_MS,
+            monitorAt: now,
             raceState: 'ready',
             raceStartTime: null,
             sensorLastSeen: meta ? meta.sensorLastSeen || 0 : 0,
@@ -1842,8 +1874,9 @@
         firebaseCleanups.push(() => triggersRef.off('child_added'));
 
         monitorHeartbeatTimer = setInterval(() => {
-            metaRef.update({ monitorUntil: Date.now() + 300000, monitorAt: Date.now() });
-        }, 60000);
+            const beat = Date.now();
+            metaRef.update({ monitorUntil: beat + MONITOR_STALE_MS, monitorAt: beat });
+        }, MONITOR_HEARTBEAT_MS);
 
         updateMonitorSensorStatus();
         updateRaceUI();
@@ -1873,10 +1906,7 @@
         if (monitorHeartbeatTimer) { clearInterval(monitorHeartbeatTimer); monitorHeartbeatTimer = null; }
         if (sensorHeartbeatTimer) { clearInterval(sensorHeartbeatTimer); sensorHeartbeatTimer = null; }
         if (myRole === 'monitor' && metaRef && monitorId) {
-            metaRef.transaction(cur => {
-                if (cur && cur.monitorId === monitorId) return Object.assign({}, cur, { monitorUntil: 0 });
-                return cur;
-            });
+            metaRef.update({ monitorUntil: 0, monitorAt: 0 }).catch(() => {});
         }
         sessionRef = null;
         metaRef = null;
@@ -2035,7 +2065,17 @@
 
         if (!result) {
             video.classList.remove('gate-locked');
-            if (info && !gateCarVisible) info.textContent = 'Match: —';
+            if (info && !gateCarVisible) {
+                if (lastColorPeek && lastColorPeek.ratio > 0) {
+                    const need = Math.round(lastColorPeek.threshold * 100);
+                    const got = Math.round(lastColorPeek.ratio * 100);
+                    info.textContent = `Near: ${got}% · ${resolveRacerName(lastColorPeek.carId)} (need ~${need}%)`;
+                } else if (!getRacersWithColor().length) {
+                    info.textContent = 'No synced colors — tap Sync on each car (best on this camera phone)';
+                } else {
+                    info.textContent = 'Match: — (aim tape in green box)';
+                }
+            }
 
             if (gateCarVisible && !gateClearTimer) {
                 gateClearTimer = setTimeout(() => {
@@ -2178,7 +2218,7 @@
     }
 
     function openColorCalib(racerId) {
-        const racer = settings.racers.find(r => r.id === racerId);
+        const racer = getActiveRoster().find(r => r.id === racerId) || settings.racers.find(r => r.id === racerId);
         if (!racer) return;
 
         calibratingRacerId = racerId;
@@ -2240,10 +2280,17 @@
             return;
         }
 
-        const racer = settings.racers.find(r => r.id === calibratingRacerId);
+        let racer = settings.racers.find(r => r.id === calibratingRacerId);
+        if (!racer) {
+            const fromRoster = getActiveRoster().find(r => r.id === calibratingRacerId);
+            if (fromRoster) {
+                racer = { id: fromRoster.id, name: fromRoster.name };
+                settings.racers.push(racer);
+            }
+        }
         if (!racer) return;
 
-        const conflict = settings.racers.find(r =>
+        const conflict = getActiveRoster().find(r =>
             r.id !== racer.id && r.color && hueDist(r.color.h, color.h) < 18 && Math.abs(r.color.s - color.s) < 0.2
         );
         if (conflict && !confirm(`This looks similar to ${conflict.name}. Use a more distinct color? Capture anyway?`)) return;
@@ -2254,6 +2301,13 @@
         renderRacersList();
         updateSyncedColorStatus();
         if (myRole === 'monitor') publishRaceState();
+        else if (myRole === 'sensor' && metaRef) {
+            const roster = getActiveRoster().map(r => {
+                const local = settings.racers.find(l => l.id === r.id);
+                return local && local.color ? Object.assign({}, r, { color: local.color }) : r;
+            });
+            metaRef.update({ racers: roster, 'settings/racers': roster }).catch(() => {});
+        }
         showToast(`${racer.name} color saved`);
         closeColorCalib();
     }
@@ -2383,6 +2437,9 @@
     });
 
     applySettingsToUI();
+
+    window.addEventListener('pagehide', releaseMonitorLock);
+    window.addEventListener('beforeunload', releaseMonitorLock);
 
     if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('./sw.js').catch(() => {});
