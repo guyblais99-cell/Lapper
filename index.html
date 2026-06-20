@@ -149,6 +149,7 @@
             margin-bottom: 6px;
         }
         .field-hint { font-size: 0.68rem; color: var(--text-muted); margin-top: 4px; line-height: 1.4; }
+        .field-hint.warn { color: var(--accent-amber); }
 
         input[type="text"], input[type="number"], select {
             width: 100%;
@@ -764,6 +765,7 @@
                 <button type="button" class="btn btn-ghost btn-sm" id="btn-torch">Light off</button>
                 <span class="field-hint" id="color-match-info" style="flex:2;text-align:center;padding-top:8px;">Match: —</span>
             </div>
+            <p class="field-hint warn" id="synced-colors-info" style="margin-top:8px;">Checking synced colors…</p>
         </div>
         <div id="manual-gate-panel" class="hidden">
             <label>Manual gate — tap when car crosses</label>
@@ -972,11 +974,33 @@
     }
 
     function getActiveRoster() {
-        return sensorRoster.length ? sensorRoster : settings.racers;
+        const local = settings.racers || [];
+        const remote = sensorRoster.length ? sensorRoster : local;
+        if (!sensorRoster.length) return local;
+        return remote.map(r => {
+            const localR = local.find(l => l.id === r.id);
+            if (localR && localR.color && (!r.color || typeof r.color.h !== 'number')) {
+                return Object.assign({}, r, { color: localR.color });
+            }
+            return r;
+        });
     }
 
     function getRacersWithColor() {
         return getActiveRoster().filter(r => r.color && typeof r.color.h === 'number');
+    }
+
+    function updateSyncedColorStatus() {
+        const el = document.getElementById('synced-colors-info');
+        if (!el || myRole !== 'sensor') return;
+        const count = getRacersWithColor().length;
+        if (!count) {
+            el.textContent = 'No synced colors on this phone — sync tape on monitor (or Racers tab here), then check Match below.';
+            el.classList.add('warn');
+            return;
+        }
+        el.classList.remove('warn');
+        el.textContent = `${count} car${count === 1 ? '' : 's'} synced — hold colored tape in the green box. Match % updates live; laps only count after monitor starts the race.`;
     }
 
     // --- Color math ---
@@ -1182,17 +1206,18 @@
         const motionEl = document.getElementById('motion-level');
         const hasMotion = lastMotionRatio >= motionTrigger;
         const aggressive = now < motionBurstUntil;
-
+        const isRacing = sensorRaceState === 'racing';
+        // Before the race, scan continuously so you can verify tape colors in the green box.
+        const scanningHard = hasMotion || aggressive || !isRacing;
         if (motionEl) {
-            motionEl.textContent = hasMotion ? 'YES' : (aggressive ? '…' : '—');
-            motionEl.classList.toggle('motion-hot', hasMotion || aggressive);
+            motionEl.textContent = hasMotion ? 'YES' : (scanningHard ? '…' : '—');
+            motionEl.classList.toggle('motion-hot', hasMotion || scanningHard);
         }
 
         if (hasMotion) {
             motionBurstUntil = now + MOTION_BURST_MS;
         }
 
-        const scanningHard = hasMotion || aggressive;
         const frame = drawGateCrop(video, canvas, ctx, scanningHard);
 
         if (scanningHard) {
@@ -1711,6 +1736,17 @@
     async function ensureFirebaseAuth() {
         if (typeof firebase === 'undefined') throw new Error('Firebase failed to load');
         if (!firebase.auth().currentUser) await firebase.auth().signInAnonymously();
+        if (!firebase.auth().currentUser) {
+            throw new Error('Anonymous sign-in failed — enable Anonymous Auth in Firebase Console.');
+        }
+    }
+
+    function formatFirebaseError(err) {
+        const msg = err && err.message ? err.message : String(err);
+        if (msg.includes('permission_denied')) {
+            return 'Firebase permission denied. Publish database.rules.json to your project (Firebase Console → Realtime Database → Rules), including the apextrack/ paths. Also confirm Authentication → Anonymous is enabled.';
+        }
+        return msg;
     }
 
     function sensorIsOnline() {
@@ -1731,6 +1767,7 @@
     function applyMetaFromFirebase(meta) {
         if (!meta) return;
         if (meta.sensorLastSeen) sensorLastSeen = meta.sensorLastSeen;
+        if (Array.isArray(meta.racers)) sensorRoster = meta.racers;
         applySensorRaceState({
             state: meta.raceState,
             settings: Object.assign({}, meta.settings || {}, { racers: meta.racers || (meta.settings && meta.settings.racers) })
@@ -1858,7 +1895,7 @@
             else await setupSensorFirebase();
         } catch (err) {
             console.error(err);
-            alert('Connection failed: ' + (err.message || 'Check Firebase rules and internet.'));
+            alert('Connection failed: ' + formatFirebaseError(err));
             teardownSession(true);
         }
     }
@@ -1924,6 +1961,7 @@
             if (data.settings.motionTrigger != null) settings.motionTrigger = data.settings.motionTrigger;
             if (Array.isArray(data.settings.racers)) sensorRoster = data.settings.racers;
         }
+        updateSyncedColorStatus();
         if (data.state === 'racing') {
             lastSentByCar = {};
             gateCarVisible = false;
@@ -1996,7 +2034,10 @@
         const { carId, ratio, burst } = result;
         video.classList.add('gate-locked');
         const burstTag = burst ? ' ⚡' : '';
-        if (info) info.textContent = `Match: ${Math.round(ratio * 100)}% · ${resolveRacerName(carId)}${burstTag}`;
+        if (info) {
+            const preview = sensorRaceState !== 'racing' ? ' (preview — start race for laps)' : '';
+            info.textContent = `Match: ${Math.round(ratio * 100)}% · ${resolveRacerName(carId)}${burstTag}${preview}`;
+        }
 
         if (!gateCarVisible) {
             maybeSendGateTrigger(carId);
@@ -2040,6 +2081,7 @@
             updateStatus('No synced colors — sync cars on Racers tab first', 'connected');
         }
 
+        updateSyncedColorStatus();
         const video = document.getElementById('video-feed');
         const canvas = document.getElementById('hidden-canvas');
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -2189,6 +2231,7 @@
         saveSettings();
         document.getElementById('calib-preview').style.background = color.hex;
         renderRacersList();
+        updateSyncedColorStatus();
         if (myRole === 'monitor') publishRaceState();
         showToast(`${racer.name} color saved`);
         closeColorCalib();
