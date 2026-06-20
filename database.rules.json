@@ -1,0 +1,26 @@
+{
+  "rules": {
+    "recitals": {
+      "$recitalId": {
+        ".read": "auth != null",
+        ".write": "auth != null"
+      }
+    },
+    "apextrack": {
+      "$sessionId": {
+        "meta": {
+          ".read": "auth != null",
+          ".write": "auth != null"
+        },
+        "triggers": {
+          ".read": "auth != null",
+          ".write": "auth != null",
+          "$triggerId": {
+            ".read": "auth != null",
+            ".write": "auth != null"
+          }
+        }
+      }
+    }
+  }
+}
