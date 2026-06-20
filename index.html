@@ -677,9 +677,9 @@
                 <p class="field-hint">Normal color sensitivity.</p>
             </div>
             <div>
-                <label for="setting-motion-trigger">Motion trigger %</label>
-                <input type="number" id="setting-motion-trigger" min="5" max="30" step="1" value="12">
-                <p class="field-hint">Raise if wind/grass triggers motion. Lower for fast small cars.</p>
+                <label for="setting-motion-trigger">Motion indicator %</label>
+                <input type="number" id="setting-motion-trigger" min="5" max="50" step="1" value="12">
+                <p class="field-hint">Controls when “Motion: YES” shows (wind/grass). Laps need a color match, not motion alone.</p>
             </div>
         </div>
         <div>
@@ -725,6 +725,8 @@
         </div>
 
         <button type="button" class="btn btn-ghost btn-sm" id="btn-reset-settings">Reset settings to defaults</button>
+        <button type="button" class="btn btn-primary btn-sm" id="btn-save-settings" style="margin-top:8px;">Save settings</button>
+        <p class="field-hint" id="settings-save-hint">Changes also save when you leave a field. Monitor timing settings sync to the camera when a race starts.</p>
     </div>
 
     <!-- Account tab -->
@@ -882,7 +884,7 @@
     const SCAN_BURST_WIDTH = 960;
     const MOTION_GRID_W = 80;
     const MOTION_GRID_H = 36;
-    const MOTION_CELL_DELTA = 22;
+    const MOTION_CELL_DELTA = 30;
     const MOTION_BURST_MS = 380;
     const GATE_LATCH_MS = 220;
     const MONITOR_STALE_MS = 45000;
@@ -933,6 +935,7 @@
     let settings = loadSettings();
     let authUser = null;
     let cloudSaveTimer = null;
+    let settingsSavedToastTimer = null;
     let sessionRef = null;
     let metaRef = null;
     let triggersRef = null;
@@ -1009,6 +1012,19 @@
     function saveSettings() {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
         scheduleCloudSave();
+        flashSettingsSaved();
+    }
+
+    function flashSettingsSaved() {
+        const hint = document.getElementById('settings-save-hint');
+        if (hint) {
+            hint.textContent = authUser
+                ? 'Saved to this device and your account.'
+                : 'Saved on this device — sign in on Account tab to sync elsewhere.';
+            hint.classList.remove('warn');
+        }
+        clearTimeout(settingsSavedToastTimer);
+        settingsSavedToastTimer = setTimeout(() => showToast('Settings saved'), 250);
     }
 
     function profilePayload() {
@@ -1187,7 +1203,7 @@
         settings.minLapSec = clamp(parseFloat(document.getElementById('setting-minlap').value) || 2, 1, 120);
         settings.startGraceSec = clamp(parseFloat(document.getElementById('setting-start-grace').value) || 3, 0, 30);
         settings.colorThreshold = clamp(parseInt(document.getElementById('setting-color-threshold').value, 10) || 6, 3, 40) / 100;
-        settings.motionTrigger = clamp(parseInt(document.getElementById('setting-motion-trigger').value, 10) || 12, 5, 30) / 100;
+        settings.motionTrigger = clamp(parseInt(document.getElementById('setting-motion-trigger').value, 10) || 12, 5, 50) / 100;
         settings.countdownSec = clamp(parseInt(document.getElementById('setting-countdown').value, 10) || 0, 0, 10);
         settings.ttsEnabled = document.getElementById('setting-tts').checked;
         settings.soundEnabled = document.getElementById('setting-sound').checked;
@@ -1424,8 +1440,7 @@
             }
         });
 
-        const needRatio = threshold;
-        const needPixels = wide ? 12 : 24;
+        const needRatio = Math.max(0.03, threshold);
         lastColorPeek = bestId ? {
             carId: bestId,
             ratio: bestRatio,
@@ -1434,7 +1449,7 @@
             colorful
         } : null;
 
-        if (bestId && (bestRatio >= needRatio || bestPixels >= needPixels)) {
+        if (bestId && bestRatio >= needRatio) {
             return { carId: bestId, ratio: bestRatio, burst: wide };
         }
         return null;
@@ -1447,8 +1462,8 @@
 
         const step = aggressive ? 1 : 2;
         const threshold = aggressive
-            ? Math.max(0.02, settings.colorThreshold * 0.5)
-            : settings.colorThreshold;
+            ? Math.max(0.03, settings.colorThreshold * 0.75)
+            : Math.max(0.03, settings.colorThreshold);
         const wide = !!aggressive;
 
         let result = scoreColorRegion(imageData, roster, 0, 1, step, threshold, wide);
@@ -1537,7 +1552,7 @@
             btn.addEventListener('click', () => {
                 gateCarVisible = false;
                 gateCurrentId = '';
-                maybeSendGateTrigger(btn.getAttribute('data-manual-id'));
+                maybeSendGateTrigger(btn.getAttribute('data-manual-id'), 1);
             });
         });
     }
@@ -2266,8 +2281,11 @@
         else el.textContent = 'Waiting for race start on monitor…';
     }
 
-    function maybeSendGateTrigger(carId) {
+    function maybeSendGateTrigger(carId, matchRatio) {
         if (sensorRaceState !== 'racing') return;
+
+        const minMatch = Math.max(0.03, settings.colorThreshold);
+        if (typeof matchRatio !== 'number' || matchRatio < minMatch) return;
 
         const now = Date.now();
         const cooldownMs = settings.debounceSec * 1000;
@@ -2333,9 +2351,9 @@
         }
 
         if (!gateCarVisible) {
-            maybeSendGateTrigger(carId);
+            maybeSendGateTrigger(carId, ratio);
         } else if (gateCurrentId !== carId) {
-            maybeSendGateTrigger(carId);
+            maybeSendGateTrigger(carId, ratio);
         }
         gateCarVisible = true;
         gateCurrentId = carId;
