@@ -683,10 +683,10 @@
         </div>
         <div class="toggle-row">
             <div>
-                <span>Mirror camera</span>
-                <small>Flip sensor preview horizontally</small>
+                <span>Flip preview left/right</span>
+                <small>Usually leave off for the rear finish-line camera</small>
             </div>
-            <label class="switch"><input type="checkbox" id="setting-mirror" checked><span class="slider"></span></label>
+            <label class="switch"><input type="checkbox" id="setting-mirror"><span class="slider"></span></label>
         </div>
         <div class="toggle-row">
             <div>
@@ -836,7 +836,7 @@
         motionTrigger: 0.12,
         ttsEnabled: true,
         soundEnabled: true,
-        mirrorCamera: true,
+        mirrorCamera: false,
         hapticEnabled: true,
         manualGate: false,
         racers: []
@@ -893,13 +893,27 @@
     function loadSettings() {
         try {
             const raw = localStorage.getItem(STORAGE_KEY);
-            if (raw) return normalizeSettings(JSON.parse(raw));
+            if (raw) {
+                const loaded = normalizeSettings(JSON.parse(raw));
+                return applyPreviewMirrorMigration(loaded);
+            }
             for (const key of ['apextrack-settings-v4', 'apextrack-settings-v3', 'apextrack-settings-v2', 'apextrack-settings-v1']) {
                 const legacy = localStorage.getItem(key);
-                if (legacy) return normalizeSettings(JSON.parse(legacy));
+                if (legacy) return applyPreviewMirrorMigration(normalizeSettings(JSON.parse(legacy)));
             }
         } catch (_) { /* ignore */ }
-        return { ...DEFAULTS, racers: [] };
+        return applyPreviewMirrorMigration({ ...DEFAULTS, racers: [] });
+    }
+
+    function applyPreviewMirrorMigration(loaded) {
+        try {
+            if (!localStorage.getItem('apextrack-preview-mirror-fixed')) {
+                loaded.mirrorCamera = false;
+                localStorage.setItem('apextrack-preview-mirror-fixed', '1');
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(loaded));
+            }
+        } catch (_) { /* ignore */ }
+        return loaded;
     }
 
     function normalizeSettings(data) {
@@ -909,6 +923,7 @@
         if (merged.manualGate == null) merged.manualGate = false;
         if (merged.colorThreshold == null) merged.colorThreshold = DEFAULTS.colorThreshold;
         if (merged.motionTrigger == null) merged.motionTrigger = DEFAULTS.motionTrigger;
+        if (merged.mirrorCamera == null) merged.mirrorCamera = false;
         if (Array.isArray(data.savedMarkers) && !merged.racers.length) {
             merged.racers = data.savedMarkers.map((id, i) => ({ id: `c${i + 1}`, name: String(id) }));
         }
@@ -929,6 +944,12 @@
         localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
     }
 
+    function applyLiveVideoMirror() {
+        const video = document.getElementById('video-feed');
+        if (!video || !video.srcObject) return;
+        video.classList.toggle('mirror', !!settings.mirrorCamera);
+    }
+
     function readSettingsFromUI() {
         settings.sessionId = document.getElementById('session-id-input').value.trim().toLowerCase().replace(/\s+/g, '-');
         settings.raceName = document.getElementById('race-name-input').value.trim();
@@ -945,6 +966,7 @@
         settings.hapticEnabled = document.getElementById('setting-haptic').checked;
         settings.manualGate = document.getElementById('setting-manual-gate').checked;
         saveSettings();
+        applyLiveVideoMirror();
         updateGateModeUI();
     }
 
@@ -2086,8 +2108,7 @@
         const canvas = document.getElementById('hidden-canvas');
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-        if (settings.mirrorCamera) video.classList.add('mirror');
-        else video.classList.remove('mirror');
+        applyLiveVideoMirror();
 
         updateSensorStatusUI();
         updateGateModeUI();
