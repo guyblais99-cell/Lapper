@@ -639,7 +639,8 @@
 
     <!-- Racers tab -->
     <div class="tab-panel" id="tab-racers" role="tabpanel">
-        <p class="field-hint" style="margin-bottom:4px;">Tape a <strong>bright colored sticker</strong> on each car’s side (orange, pink, lime — all different). Sync the color with the camera before racing.</p>
+        <p class="field-hint" style="margin-bottom:4px;">Tape a <strong>large bright sticker</strong> on each car’s <strong>side</strong> (orange, pink, lime — all different). Bigger tape = detects farther away. Sync color on the <strong>camera phone</strong> at the finish line.</p>
+        <p class="field-hint warn" style="margin-bottom:8px;">Pro tip: printable <strong>AprilTag</strong> stickers (black &amp; white squares) work much better at distance than colored tape — coming in a future update. Search “AprilTag 36h11 printable”.</p>
         <div>
             <label for="racer-name-input">Car name</label>
             <input type="text" id="racer-name-input" autocomplete="off" placeholder="e.g. Buggy 1">
@@ -664,6 +665,24 @@
                 <label for="setting-minlap">Min lap time (sec)</label>
                 <input type="number" id="setting-minlap" min="1" max="120" step="0.5" value="2">
                 <p class="field-hint">Min time between laps 2, 3, 4…</p>
+            </div>
+        </div>
+        <div class="grid-2">
+            <div>
+                <label for="setting-gate-band">Gate scan zone</label>
+                <select id="setting-gate-band">
+                    <option value="lower">Lower track (RC ground level)</option>
+                    <option value="center">Center band</option>
+                    <option value="full">Full frame</option>
+                </select>
+                <p class="field-hint">Match the green box on the camera preview. Use <strong>Lower track</strong> for tripod low / track-level shots.</p>
+            </div>
+            <div>
+                <label class="switch" style="margin-top:24px;display:flex;align-items:center;gap:10px;">
+                    <input type="checkbox" id="setting-distance-mode">
+                    <span>Distance mode (farther cars)</span>
+                </label>
+                <p class="field-hint">Looser color matching when tape is small in frame. Raise Color match % if you get false laps.</p>
             </div>
         </div>
         <div class="grid-2">
@@ -817,7 +836,8 @@
     <div id="camera-view" class="hidden">
         <div class="mode-badge" id="gate-mode-badge">Color gate mode</div>
         <div id="color-gate-panel">
-            <label>Finish-line camera — aim gate box at the line</label>
+            <label>Finish-line camera — aim gate box at the track</label>
+            <p class="field-hint" id="camera-setup-tip">Low camera at track level works best. Large bright tape on the side of each car.</p>
             <div class="video-wrap">
                 <video id="video-feed" playsinline muted></video>
                 <div class="scan-zone" id="scan-zone"></div>
@@ -880,8 +900,8 @@
     'use strict';
 
     const STORAGE_KEY = 'apextrack-settings-v5';
-    const SCAN_TARGET_WIDTH = 640;
-    const SCAN_BURST_WIDTH = 960;
+    const SCAN_TARGET_WIDTH = 1280;
+    const SCAN_BURST_WIDTH = 1920;
     const MOTION_GRID_W = 80;
     const MOTION_GRID_H = 36;
     const MOTION_CELL_DELTA = 30;
@@ -904,6 +924,8 @@
         mirrorCamera: false,
         hapticEnabled: true,
         manualGate: false,
+        gateBand: 'lower',
+        distanceMode: true,
         racers: []
     };
 
@@ -993,6 +1015,8 @@
         if (merged.colorThreshold == null) merged.colorThreshold = DEFAULTS.colorThreshold;
         if (merged.motionTrigger == null) merged.motionTrigger = DEFAULTS.motionTrigger;
         if (merged.mirrorCamera == null) merged.mirrorCamera = false;
+        if (!merged.gateBand) merged.gateBand = DEFAULTS.gateBand;
+        if (merged.distanceMode == null) merged.distanceMode = DEFAULTS.distanceMode;
         if (Array.isArray(data.savedMarkers) && !merged.racers.length) {
             merged.racers = data.savedMarkers.map((id, i) => ({ id: `c${i + 1}`, name: String(id) }));
         }
@@ -1043,6 +1067,8 @@
             mirrorCamera: settings.mirrorCamera,
             hapticEnabled: settings.hapticEnabled,
             manualGate: settings.manualGate,
+            gateBand: settings.gateBand,
+            distanceMode: settings.distanceMode,
             racers: settings.racers,
             updatedAt: Date.now()
         };
@@ -1210,7 +1236,10 @@
         settings.mirrorCamera = document.getElementById('setting-mirror').checked;
         settings.hapticEnabled = document.getElementById('setting-haptic').checked;
         settings.manualGate = document.getElementById('setting-manual-gate').checked;
+        settings.gateBand = document.getElementById('setting-gate-band').value || 'lower';
+        settings.distanceMode = document.getElementById('setting-distance-mode').checked;
         saveSettings();
+        applyGateZoneOverlay();
         applyLiveVideoMirror();
         updateGateModeUI();
     }
@@ -1230,6 +1259,9 @@
         document.getElementById('setting-mirror').checked = settings.mirrorCamera;
         document.getElementById('setting-haptic').checked = settings.hapticEnabled;
         document.getElementById('setting-manual-gate').checked = settings.manualGate;
+        document.getElementById('setting-gate-band').value = settings.gateBand || 'lower';
+        document.getElementById('setting-distance-mode').checked = !!settings.distanceMode;
+        applyGateZoneOverlay();
         renderRacersList();
         updateGateModeUI();
     }
@@ -1320,11 +1352,12 @@
 
     function pixelMatchesColor(r, g, b, ref, wide) {
         const hsv = rgbToHsv(r, g, b);
-        if (hsv.s < (wide ? 0.08 : 0.12)) return false;
-        if (hsv.v < 0.08 || hsv.v > 0.995) return false;
-        const hueTol = wide ? 42 : 30;
-        const satTol = wide ? 0.55 : 0.4;
-        const valTol = wide ? 0.58 : 0.45;
+        const distWide = wide || settings.distanceMode;
+        if (hsv.s < (distWide ? 0.07 : 0.12)) return false;
+        if (hsv.v < 0.07 || hsv.v > 0.995) return false;
+        const hueTol = distWide ? 48 : 30;
+        const satTol = distWide ? 0.62 : 0.4;
+        const valTol = distWide ? 0.65 : 0.45;
         if (hueDist(hsv.h, ref.h) > hueTol) return false;
         if (Math.abs(hsv.s - ref.s) > satTol) return false;
         if (Math.abs(hsv.v - ref.v) > valTol) return false;
@@ -1348,13 +1381,60 @@
         return { h: mid.h, s: mid.s, v: mid.v, hex: hsvToHex(mid.h, mid.s, mid.v) };
     }
 
+    function getGateCropRect(vw, vh) {
+        const band = settings.gateBand || 'lower';
+        if (band === 'full') {
+            return { sx: 0, sy: 0, cropW: vw, cropH: vh };
+        }
+        if (band === 'lower') {
+            return { sx: vw * 0.03, sy: vh * 0.36, cropW: vw * 0.94, cropH: vh * 0.58 };
+        }
+        return { sx: vw * 0.06, sy: vh * 0.29, cropW: vw * 0.88, cropH: vh * 0.42 };
+    }
+
+    function applyGateZoneOverlay() {
+        const zone = document.getElementById('scan-zone');
+        if (!zone) return;
+        const band = settings.gateBand || 'lower';
+        zone.style.left = '';
+        zone.style.right = '';
+        zone.style.top = '';
+        zone.style.bottom = '';
+        if (band === 'full') {
+            zone.style.inset = '2%';
+        } else if (band === 'lower') {
+            zone.style.left = '3%';
+            zone.style.right = '3%';
+            zone.style.top = '36%';
+            zone.style.bottom = '6%';
+        } else {
+            zone.style.left = '6%';
+            zone.style.right = '6%';
+            zone.style.top = '29%';
+            zone.style.bottom = '29%';
+        }
+    }
+
+    function effectiveColorThreshold(aggressive) {
+        const base = settings.colorThreshold;
+        if (settings.distanceMode) {
+            const scaled = aggressive ? base * 0.55 : base * 0.65;
+            return Math.max(0.012, scaled);
+        }
+        return aggressive ? Math.max(0.03, base * 0.75) : Math.max(0.03, base);
+    }
+
+    function minLapMatchRatio() {
+        if (settings.distanceMode) {
+            return Math.max(0.012, settings.colorThreshold * 0.5);
+        }
+        return Math.max(0.03, settings.colorThreshold);
+    }
+
     function drawGateCrop(video, canvas, ctx, highRes) {
         const vw = video.videoWidth;
         const vh = video.videoHeight;
-        const cropW = vw * 0.88;
-        const cropH = vh * 0.42;
-        const sx = (vw - cropW) / 2;
-        const sy = (vh - cropH) / 2;
+        const { sx, sy, cropW, cropH } = getGateCropRect(vw, vh);
         const targetW = highRes ? SCAN_BURST_WIDTH : SCAN_TARGET_WIDTH;
         canvas.width = targetW;
         canvas.height = Math.max(1, Math.round(targetW * (cropH / cropW)));
@@ -1440,7 +1520,7 @@
             }
         });
 
-        const needRatio = Math.max(0.03, threshold);
+        const needRatio = effectiveColorThreshold(wide);
         lastColorPeek = bestId ? {
             carId: bestId,
             ratio: bestRatio,
@@ -1461,10 +1541,8 @@
         if (!roster.length) return null;
 
         const step = aggressive ? 1 : 2;
-        const threshold = aggressive
-            ? Math.max(0.03, settings.colorThreshold * 0.75)
-            : Math.max(0.03, settings.colorThreshold);
-        const wide = !!aggressive;
+        const threshold = effectiveColorThreshold(aggressive);
+        const wide = !!aggressive || !!settings.distanceMode;
 
         let result = scoreColorRegion(imageData, roster, 0, 1, step, threshold, wide);
         if (!result && aggressive) {
@@ -1991,6 +2069,8 @@
             startGraceSec: settings.startGraceSec,
             colorThreshold: settings.colorThreshold,
             motionTrigger: settings.motionTrigger,
+            gateBand: settings.gateBand,
+            distanceMode: settings.distanceMode,
             raceStartTime: raceStartTime,
             racers: settings.racers
         };
@@ -2257,7 +2337,12 @@
             settings.startGraceSec = data.settings.startGraceSec ?? settings.startGraceSec;
             if (data.settings.colorThreshold != null) settings.colorThreshold = data.settings.colorThreshold;
             if (data.settings.motionTrigger != null) settings.motionTrigger = data.settings.motionTrigger;
+            if (data.settings.gateBand) settings.gateBand = data.settings.gateBand;
+            if (data.settings.distanceMode != null) settings.distanceMode = data.settings.distanceMode;
             if (Array.isArray(data.settings.racers)) sensorRoster = data.settings.racers;
+            if (myRole === 'sensor' && !document.getElementById('session-panel').classList.contains('hidden')) {
+                applySettingsToUI();
+            }
         }
         updateSyncedColorStatus();
         if (data.state === 'racing') {
@@ -2284,7 +2369,7 @@
     function maybeSendGateTrigger(carId, matchRatio) {
         if (sensorRaceState !== 'racing') return;
 
-        const minMatch = Math.max(0.03, settings.colorThreshold);
+        const minMatch = minLapMatchRatio();
         if (typeof matchRatio !== 'number' || matchRatio < minMatch) return;
 
         const now = Date.now();
@@ -2392,6 +2477,7 @@
             updateStatus('No synced colors — sync cars on Racers tab first', 'connected');
         }
 
+        applyGateZoneOverlay();
         updateSyncedColorStatus();
         const video = document.getElementById('video-feed');
         const canvas = document.getElementById('hidden-canvas');
@@ -2668,6 +2754,10 @@
         if (e.key === 'Enter') addRacer();
     });
 
+    document.getElementById('btn-save-settings').addEventListener('click', () => {
+        readSettingsFromUI();
+        showToast('Settings saved');
+    });
     document.getElementById('btn-reset-settings').addEventListener('click', () => {
         if (confirm('Reset timing and audio settings to defaults? (Racers are kept)')) {
             const racers = settings.racers;
@@ -2680,7 +2770,8 @@
 
     ['session-id-input', 'race-name-input', 'race-laps-input',
      'setting-debounce', 'setting-minlap', 'setting-start-grace', 'setting-color-threshold', 'setting-motion-trigger', 'setting-countdown',
-     'setting-tts', 'setting-sound', 'setting-mirror', 'setting-haptic', 'setting-manual-gate'
+     'setting-tts', 'setting-sound', 'setting-mirror', 'setting-haptic', 'setting-manual-gate',
+     'setting-gate-band', 'setting-distance-mode'
     ].forEach(id => {
         document.getElementById(id).addEventListener('change', () => readSettingsFromUI());
     });
