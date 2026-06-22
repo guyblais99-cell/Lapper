@@ -869,8 +869,8 @@
             <div>
                 <label for="setting-tag-capture">AprilTag capture speed</label>
                 <select id="setting-tag-capture">
-                    <option value="fast">Fast RC (recommended)</option>
-                    <option value="balanced">Balanced</option>
+                    <option value="balanced" selected>Balanced (recommended)</option>
+                    <option value="fast">Fast RC</option>
                     <option value="quality">Max detail (slow cars)</option>
                 </select>
                 <p class="field-hint">Fast RC runs more tag scans per second (better for quick passes). Max detail is slower but picks up smaller/distant tags.</p>
@@ -1137,7 +1137,7 @@
         gateMode: 'apriltag',
         gateBand: 'lower',
         distanceMode: true,
-        tagCapture: 'fast',
+        tagCapture: 'balanced',
         cameraFps: 'max',
         racers: []
     };
@@ -1176,9 +1176,9 @@
     let cameraFpsActual = 0;
 
     const TAG_CAPTURE_PROFILES = {
-        fast: { scanW: 960, detectMs: 32, decimate: 2.5, label: 'Fast RC' },
-        balanced: { scanW: 1280, detectMs: 50, decimate: 2.0, label: 'Balanced' },
-        quality: { scanW: 1920, detectMs: 95, decimate: 1.5, label: 'Max detail' }
+        fast: { scanW: 1280, detectMs: 40, decimate: 2.0, label: 'Fast RC' },
+        balanced: { scanW: 1280, detectMs: 55, decimate: 1.5, label: 'Balanced' },
+        quality: { scanW: 1920, detectMs: 90, decimate: 1.5, label: 'Max detail' }
     };
 
     let settings = loadSettings();
@@ -1255,7 +1255,8 @@
             .filter(r => r && r.id)
             .map(r => {
                 const racer = { id: String(r.id).trim(), name: String(r.name || r.id).trim() };
-                if (typeof r.tagId === 'number') racer.tagId = r.tagId;
+                const tid = parseTagId(r.tagId);
+                if (tid != null) racer.tagId = tid;
                 if (r.color && typeof r.color.h === 'number') {
                     racer.color = { h: r.color.h, s: r.color.s, v: r.color.v, hex: r.color.hex || hsvToHex(r.color.h, r.color.s, r.color.v) };
                 }
@@ -1573,11 +1574,16 @@
         if (!Array.isArray(racers)) return;
         const used = new Set();
         racers.forEach(r => {
-            if (r && typeof r.tagId === 'number') used.add(r.tagId);
+            if (!r) return;
+            const tid = parseTagId(r.tagId);
+            if (tid != null) {
+                r.tagId = tid;
+                used.add(tid);
+            }
         });
         racers.forEach(r => {
             if (!r) return;
-            if (typeof r.tagId !== 'number') {
+            if (parseTagId(r.tagId) == null) {
                 for (let i = 0; i < 587; i++) {
                     if (!used.has(i)) {
                         r.tagId = i;
@@ -1653,8 +1659,10 @@
     }
 
     function racerByAprilTagId(tagId) {
-        return getActiveRoster().find(r => r.tagId === tagId) ||
-            settings.racers.find(r => r.tagId === tagId);
+        const id = parseTagId(tagId);
+        if (id == null) return null;
+        return getActiveRoster().find(r => parseTagId(r.tagId) === id) ||
+            settings.racers.map(normalizeRacer).filter(Boolean).find(r => parseTagId(r.tagId) === id);
     }
 
     function mapAprilTagToCarId(tagId) {
@@ -1692,21 +1700,37 @@
         document.getElementById('print-tags-modal').classList.add('hidden');
     }
 
+    function parseTagId(value) {
+        if (typeof value === 'number' && Number.isFinite(value)) return value | 0;
+        if (typeof value === 'string' && value.trim() !== '') {
+            const n = parseInt(value, 10);
+            return Number.isNaN(n) ? null : n;
+        }
+        return null;
+    }
+
+    function normalizeRacer(r) {
+        if (!r || !r.id) return null;
+        const racer = { id: String(r.id).trim(), name: String(r.name || r.id).trim() };
+        const tid = parseTagId(r.tagId);
+        if (tid != null) racer.tagId = tid;
+        if (r.color && typeof r.color.h === 'number') {
+            racer.color = { h: r.color.h, s: r.color.s, v: r.color.v, hex: r.color.hex || hsvToHex(r.color.h, r.color.s, r.color.v) };
+        }
+        return racer;
+    }
+
     function getActiveRoster() {
-        const local = settings.racers || [];
-        const remote = sensorRoster.length ? sensorRoster : local;
+        const local = (settings.racers || []).map(normalizeRacer).filter(Boolean);
         if (!sensorRoster.length) return local;
-        return remote.map(r => {
+        return sensorRoster.map(normalizeRacer).filter(Boolean).map(r => {
             const localR = local.find(l => l.id === r.id);
-            let merged = r;
-            if (localR) {
-                if (localR.color && (!r.color || typeof r.color.h !== 'number')) {
-                    merged = Object.assign({}, r, { color: localR.color });
-                }
-                if (typeof localR.tagId === 'number' && typeof r.tagId !== 'number') {
-                    merged = Object.assign({}, merged, { tagId: localR.tagId });
-                }
+            if (!localR) return r;
+            const merged = Object.assign({}, r);
+            if (localR.color && (!r.color || typeof r.color.h !== 'number')) {
+                merged.color = localR.color;
             }
+            if (merged.tagId == null && localR.tagId != null) merged.tagId = localR.tagId;
             return merged;
         });
     }
@@ -1719,11 +1743,12 @@
         const el = document.getElementById('synced-colors-info');
         if (!el || myRole !== 'sensor') return;
         if (settings.gateMode === 'apriltag') {
-            const count = getActiveRoster().filter(r => typeof r.tagId === 'number').length;
+            const roster = getActiveRoster();
+            const count = roster.filter(r => parseTagId(r.tagId) != null).length;
             el.classList.toggle('warn', !count);
             el.textContent = count
                 ? `${count} AprilTag${count === 1 ? '' : 's'} registered — aim printed tag in the green box`
-                : 'No AprilTags — add racers and print tags first';
+                : 'No AprilTags registered — add racers on monitor, then restart camera gate';
             return;
         }
         const count = getRacersWithColor().length;
@@ -1874,7 +1899,8 @@
         else if (scanWidth === true) targetW = SCAN_BURST_WIDTH;
         canvas.width = targetW;
         canvas.height = Math.max(1, Math.round(targetW * (cropH / cropW)));
-        ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, canvas.width, canvas.height);
+        const srcX = settings.mirrorCamera ? (vw - sx - cropW) : sx;
+        ctx.drawImage(video, srcX, sy, cropW, cropH, 0, 0, canvas.width, canvas.height);
         return ctx.getImageData(0, 0, canvas.width, canvas.height);
     }
 
@@ -2790,7 +2816,9 @@
                 settings.gateMode = data.settings.gateMode;
                 settings.manualGate = settings.gateMode === 'manual';
             }
-            if (Array.isArray(data.settings.racers)) sensorRoster = data.settings.racers;
+            if (Array.isArray(data.settings.racers)) {
+                sensorRoster = data.settings.racers.map(normalizeRacer).filter(Boolean);
+            }
             if (myRole === 'sensor') {
                 updateGateModeUI();
                 applyGateZoneOverlay();
@@ -2823,10 +2851,12 @@
     }
 
     function maybeSendGateTrigger(carId, matchRatio) {
-        if (sensorRaceState !== 'racing') return;
+        if (!carId || sensorRaceState !== 'racing') return;
 
-        const minMatch = minLapMatchRatio();
-        if (typeof matchRatio !== 'number' || matchRatio < minMatch) return;
+        if (settings.gateMode !== 'apriltag') {
+            const minMatch = minLapMatchRatio();
+            if (typeof matchRatio !== 'number' || matchRatio < minMatch) return;
+        }
 
         const now = Date.now();
         const cooldownMs = settings.debounceSec * 1000;
@@ -2906,14 +2936,12 @@
         let best = null;
         let bestScore = -1;
         for (const d of detections) {
-            const tagId = d.id != null ? d.id : d.tag_id;
-            if (typeof tagId !== 'number') continue;
-            const carId = mapAprilTagToCarId(tagId);
-            if (!carId) continue;
+            const tagId = parseTagId(d.id != null ? d.id : (d.tag_id != null ? d.tag_id : d.tag));
+            if (tagId == null) continue;
             const score = d.decision_margin != null ? d.decision_margin : (d.hamming != null ? -d.hamming : 1);
             if (score > bestScore) {
                 bestScore = score;
-                best = { tagId, carId, score };
+                best = { tagId, carId: mapAprilTagToCarId(tagId), score };
             }
         }
         return best;
@@ -2964,6 +2992,12 @@
         const { carId, tagId } = hit;
         video.classList.add('gate-locked');
         const preview = sensorRaceState !== 'racing' ? ' (preview)' : '';
+
+        if (!carId) {
+            if (info) info.textContent = `Tag #${tagId} seen — not registered (add racer or sync from monitor)`;
+            return;
+        }
+
         if (info) info.textContent = `Tag #${tagId} · ${resolveRacerName(carId)}${preview}`;
 
         if (!gateCarVisible) {
