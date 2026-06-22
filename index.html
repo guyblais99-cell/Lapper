@@ -1431,8 +1431,10 @@
     function initAprilTagFamily() {
         if (aprilTagFamily) return Promise.resolve(aprilTagFamily);
         if (aprilTagFamilyPromise) return aprilTagFamilyPromise;
-        aprilTagFamilyPromise = fetch('https://cdn.jsdelivr.net/npm/apriltag/families/36h11.json')
-            .then(r => r.json())
+        const loadCfg = () => fetch('./lib/36h11.json')
+            .then(r => { if (!r.ok) throw new Error('local'); return r.json(); })
+            .catch(() => fetch('https://cdn.jsdelivr.net/npm/apriltag/families/36h11.json').then(r => r.json()));
+        aprilTagFamilyPromise = loadCfg()
             .then(cfg => {
                 aprilTagFamily = new AprilTagFamily(cfg);
                 return aprilTagFamily;
@@ -2827,14 +2829,15 @@
 
         if (gateMode === 'apriltag') {
             updateStatus('Loading AprilTag detector…');
-            Promise.all([initAprilTagFamily(), initAprilTagDetector()])
+            initAprilTagDetector()
                 .then(() => {
                     updateStatus('AprilTag gate active — aim tags in green box', 'connected');
                     updateSyncedColorStatus();
                 })
                 .catch(err => {
-                    console.error(err);
-                    alert('AprilTag detector failed to load. Check internet or try Color gate mode in Settings.');
+                    console.error('AprilTag detector init failed:', err);
+                    const detail = err && err.message ? err.message : String(err);
+                    alert('AprilTag detector failed to load: ' + detail + '\n\nMake sure the lib/ folder is deployed (apriltag_wasm.wasm). You can use Color gate mode in Settings as a fallback.');
                 });
         } else if (!getRacersWithColor().length) {
             updateStatus('No synced colors — sync cars on Racers tab first', 'connected');

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'apextrack-v2';
+const CACHE_NAME = 'apextrack-v3';
 const APP_SHELL = [
   './',
   './index.html',
@@ -7,7 +7,8 @@ const APP_SHELL = [
   './icon-512.png',
   './lib/apriltag_wasm.js',
   './lib/apriltag_wasm.wasm',
-  './lib/atag-detector.js'
+  './lib/atag-detector.js',
+  './lib/36h11.json'
 ];
 
 self.addEventListener('install', (event) => {
