@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="theme-color" content="#0f1115">
-    <meta name="description" content="ApexTrack Live — RC lap timer with color gate detection">
+    <meta name="description" content="ApexTrack Live — RC lap timer with AprilTag gate detection">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="ApexTrack">
@@ -30,6 +30,10 @@
             firebase.initializeApp(firebaseConfig);
         }
     </script>
+
+    <script src="https://cdn.jsdelivr.net/npm/apriltag/dist/browser.js"></script>
+    <script src="./lib/apriltag_wasm.js"></script>
+    <script src="./lib/atag-detector.js"></script>
 
     <style>
         :root {
@@ -104,6 +108,91 @@
             border: 1px solid var(--border);
         }
         .auth-status strong { color: var(--accent-green); display: block; margin-bottom: 4px; }
+
+        .tag-thumb {
+            width: 44px;
+            height: 44px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: #fff;
+            flex-shrink: 0;
+            image-rendering: pixelated;
+        }
+
+        .print-tags-backdrop {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.85);
+            z-index: 200;
+            overflow-y: auto;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 12px;
+        }
+        .print-tags-toolbar {
+            width: 100%;
+            max-width: 720px;
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            position: sticky;
+            top: 0;
+            z-index: 2;
+            background: rgba(15, 17, 21, 0.95);
+            padding: 8px 0;
+        }
+        .print-tags-sheet {
+            width: 100%;
+            max-width: 720px;
+            background: #fff;
+            color: #111;
+            border-radius: 8px;
+            padding: 16px;
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+            gap: 16px;
+        }
+        .tag-print-card {
+            text-align: center;
+            break-inside: avoid;
+            page-break-inside: avoid;
+            padding: 8px;
+            border: 1px dashed #ccc;
+            border-radius: 8px;
+        }
+        .tag-print-card canvas {
+            width: 100%;
+            max-width: 120px;
+            height: auto;
+            image-rendering: pixelated;
+            border: 4px solid #fff;
+            outline: 1px solid #ddd;
+        }
+        .tag-print-card .tag-label {
+            font-weight: 700;
+            font-size: 0.85rem;
+            margin-top: 6px;
+        }
+        .tag-print-card .tag-meta {
+            font-size: 0.7rem;
+            color: #555;
+        }
+        @media print {
+            body * { visibility: hidden !important; }
+            .print-tags-backdrop, .print-tags-backdrop * { visibility: visible !important; }
+            .print-tags-backdrop { position: static; background: none; padding: 0; overflow: visible; }
+            .print-tags-toolbar { display: none !important; visibility: hidden !important; }
+            .print-tags-sheet {
+                position: absolute;
+                left: 0;
+                top: 0;
+                max-width: none;
+                border-radius: 0;
+                grid-template-columns: repeat(3, 1fr);
+            }
+        }
 
         .icon-btn {
             background: var(--panel-bg);
@@ -601,7 +690,7 @@
 <header class="app-header">
     <div class="brand">
         <div class="brand-title">ApexTrack</div>
-        <div class="brand-sub">Live RC Color Gate</div>
+        <div class="brand-sub">Live RC AprilTag Gate</div>
     </div>
     <div class="auth-chip hidden" id="header-auth-chip" title="Signed in"></div>
     <button type="button" class="icon-btn hidden" id="btn-back" title="Exit session" aria-label="Exit session">←</button>
@@ -639,17 +728,19 @@
 
     <!-- Racers tab -->
     <div class="tab-panel" id="tab-racers" role="tabpanel">
-        <p class="field-hint" style="margin-bottom:4px;">Tape a <strong>large bright sticker</strong> on each car’s <strong>side</strong> (orange, pink, lime — all different). Bigger tape = detects farther away. Sync color on the <strong>camera phone</strong> at the finish line.</p>
-        <p class="field-hint warn" style="margin-bottom:8px;">Pro tip: printable <strong>AprilTag</strong> stickers (black &amp; white squares) work much better at distance than colored tape — coming in a future update. Search “AprilTag 36h11 printable”.</p>
+        <p class="field-hint" style="margin-bottom:4px;">Each car gets a unique <strong>AprilTag</strong> (36h11). Print tags, tape one on each car’s <strong>side</strong> facing the finish-line camera.</p>
         <div>
             <label for="racer-name-input">Car name</label>
             <input type="text" id="racer-name-input" autocomplete="off" placeholder="e.g. Buggy 1">
         </div>
-        <button type="button" class="btn btn-primary" id="btn-add-racer">Add racer</button>
+        <div class="action-bar" style="margin-top:10px;">
+            <button type="button" class="btn btn-primary" id="btn-add-racer">Add racer</button>
+            <button type="button" class="btn btn-ghost" id="btn-print-tags">Print all tags</button>
+        </div>
 
         <h2 style="margin-top:8px;">Registered <span id="racer-count" style="color:var(--text-muted);">(0)</span></h2>
         <div class="racer-list" id="racer-list">
-            <div class="lap-empty">No racers yet — add cars and sync their colors.</div>
+            <div class="lap-empty">No racers yet — add cars to generate AprilTags.</div>
         </div>
     </div>
 
@@ -668,6 +759,14 @@
             </div>
         </div>
         <div class="grid-2">
+            <div>
+                <label for="setting-gate-mode">Gate mode</label>
+                <select id="setting-gate-mode">
+                    <option value="apriltag">AprilTag (recommended)</option>
+                    <option value="color">Color tape (legacy)</option>
+                    <option value="manual">Manual tap</option>
+                </select>
+            </div>
             <div>
                 <label for="setting-gate-band">Gate scan zone</label>
                 <select id="setting-gate-band">
@@ -837,7 +936,7 @@
         <div class="mode-badge" id="gate-mode-badge">Color gate mode</div>
         <div id="color-gate-panel">
             <label>Finish-line camera — aim gate box at the track</label>
-            <p class="field-hint" id="camera-setup-tip">Low camera at track level works best. Large bright tape on the side of each car.</p>
+            <p class="field-hint" id="camera-setup-tip">Low camera at track level works best. Tape printed AprilTags on the side of each car facing the camera.</p>
             <div class="video-wrap">
                 <video id="video-feed" playsinline muted></video>
                 <div class="scan-zone" id="scan-zone"></div>
@@ -846,7 +945,7 @@
             <canvas id="hidden-canvas" class="hidden"></canvas>
             <div class="camera-toolbar">
                 <button type="button" class="btn btn-ghost btn-sm" id="btn-torch">Light off</button>
-                <span class="field-hint" id="color-match-info" style="flex:2;text-align:center;padding-top:8px;">Match: —</span>
+                <span class="field-hint" id="color-match-info" style="flex:2;text-align:center;padding-top:8px;">Tag: —</span>
             </div>
             <p class="field-hint warn" id="synced-colors-info" style="margin-top:8px;">Checking synced colors…</p>
         </div>
@@ -868,6 +967,15 @@
             </div>
         </div>
     </div>
+</div>
+
+<!-- Print tags preview -->
+<div class="print-tags-backdrop hidden" id="print-tags-modal" aria-hidden="true">
+    <div class="print-tags-toolbar">
+        <button type="button" class="btn btn-ghost" id="btn-close-print-tags">Close</button>
+        <button type="button" class="btn btn-primary" id="btn-do-print-tags">Print</button>
+    </div>
+    <div class="print-tags-sheet" id="print-tags-sheet"></div>
 </div>
 
 <!-- Color calibration modal -->
@@ -924,6 +1032,7 @@
         mirrorCamera: false,
         hapticEnabled: true,
         manualGate: false,
+        gateMode: 'apriltag',
         gateBand: 'lower',
         distanceMode: true,
         racers: []
@@ -953,6 +1062,12 @@
     let gateFrameBuffer = [];
     let gateClearTimer = null;
     let lastColorPeek = null;
+    let aprilTagFamily = null;
+    let aprilTagFamilyPromise = null;
+    let aprilTagDetector = null;
+    let aprilTagDetectorPromise = null;
+    let lastAprilTagDetectAt = 0;
+    const APRILTAG_DETECT_MS = 90;
 
     let settings = loadSettings();
     let authUser = null;
@@ -1017,6 +1132,8 @@
         if (merged.mirrorCamera == null) merged.mirrorCamera = false;
         if (!merged.gateBand) merged.gateBand = DEFAULTS.gateBand;
         if (merged.distanceMode == null) merged.distanceMode = DEFAULTS.distanceMode;
+        if (!merged.gateMode) merged.gateMode = merged.manualGate ? 'manual' : DEFAULTS.gateMode;
+        merged.manualGate = merged.gateMode === 'manual';
         if (Array.isArray(data.savedMarkers) && !merged.racers.length) {
             merged.racers = data.savedMarkers.map((id, i) => ({ id: `c${i + 1}`, name: String(id) }));
         }
@@ -1024,12 +1141,14 @@
             .filter(r => r && r.id)
             .map(r => {
                 const racer = { id: String(r.id).trim(), name: String(r.name || r.id).trim() };
+                if (typeof r.tagId === 'number') racer.tagId = r.tagId;
                 if (r.color && typeof r.color.h === 'number') {
                     racer.color = { h: r.color.h, s: r.color.s, v: r.color.v, hex: r.color.hex || hsvToHex(r.color.h, r.color.s, r.color.v) };
                 }
                 return racer;
             })
             .filter(r => r.id);
+        ensureRacerTagIds(merged);
         return merged;
     }
 
@@ -1067,6 +1186,7 @@
             mirrorCamera: settings.mirrorCamera,
             hapticEnabled: settings.hapticEnabled,
             manualGate: settings.manualGate,
+            gateMode: settings.gateMode,
             gateBand: settings.gateBand,
             distanceMode: settings.distanceMode,
             racers: settings.racers,
@@ -1235,7 +1355,12 @@
         settings.soundEnabled = document.getElementById('setting-sound').checked;
         settings.mirrorCamera = document.getElementById('setting-mirror').checked;
         settings.hapticEnabled = document.getElementById('setting-haptic').checked;
-        settings.manualGate = document.getElementById('setting-manual-gate').checked;
+        const manualChecked = document.getElementById('setting-manual-gate').checked;
+        settings.gateMode = document.getElementById('setting-gate-mode').value || 'apriltag';
+        if (manualChecked) settings.gateMode = 'manual';
+        settings.manualGate = settings.gateMode === 'manual';
+        document.getElementById('setting-manual-gate').checked = settings.manualGate;
+        document.getElementById('setting-gate-mode').value = settings.gateMode;
         settings.gateBand = document.getElementById('setting-gate-band').value || 'lower';
         settings.distanceMode = document.getElementById('setting-distance-mode').checked;
         saveSettings();
@@ -1259,6 +1384,7 @@
         document.getElementById('setting-mirror').checked = settings.mirrorCamera;
         document.getElementById('setting-haptic').checked = settings.hapticEnabled;
         document.getElementById('setting-manual-gate').checked = settings.manualGate;
+        document.getElementById('setting-gate-mode').value = settings.gateMode || 'apriltag';
         document.getElementById('setting-gate-band').value = settings.gateBand || 'lower';
         document.getElementById('setting-distance-mode').checked = !!settings.distanceMode;
         applyGateZoneOverlay();
@@ -1272,16 +1398,145 @@
         return `c${n}`;
     }
 
+    function nextAprilTagId(racers) {
+        const list = racers || settings.racers;
+        const used = new Set(list.map(r => r.tagId).filter(t => typeof t === 'number'));
+        for (let i = 0; i < 587; i++) {
+            if (!used.has(i)) return i;
+        }
+        return null;
+    }
+
+    function ensureRacerTagIds(target) {
+        const racers = target ? target.racers : settings.racers;
+        if (!Array.isArray(racers)) return;
+        const used = new Set();
+        racers.forEach(r => {
+            if (r && typeof r.tagId === 'number') used.add(r.tagId);
+        });
+        racers.forEach(r => {
+            if (!r) return;
+            if (typeof r.tagId !== 'number') {
+                for (let i = 0; i < 587; i++) {
+                    if (!used.has(i)) {
+                        r.tagId = i;
+                        used.add(i);
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
+    function initAprilTagFamily() {
+        if (aprilTagFamily) return Promise.resolve(aprilTagFamily);
+        if (aprilTagFamilyPromise) return aprilTagFamilyPromise;
+        aprilTagFamilyPromise = fetch('https://cdn.jsdelivr.net/npm/apriltag/families/36h11.json')
+            .then(r => r.json())
+            .then(cfg => {
+                aprilTagFamily = new AprilTagFamily(cfg);
+                return aprilTagFamily;
+            })
+            .catch(err => {
+                aprilTagFamilyPromise = null;
+                throw err;
+            });
+        return aprilTagFamilyPromise;
+    }
+
+    function initAprilTagDetector() {
+        if (aprilTagDetector && aprilTagDetector.isReady()) return Promise.resolve(aprilTagDetector);
+        if (aprilTagDetectorPromise) return aprilTagDetectorPromise;
+        aprilTagDetectorPromise = (async () => {
+            aprilTagDetector = new ApriltagDetector();
+            await aprilTagDetector.init();
+            return aprilTagDetector;
+        })().catch(err => {
+            aprilTagDetectorPromise = null;
+            throw err;
+        });
+        return aprilTagDetectorPromise;
+    }
+
+    function renderAprilTagGrid(grid, canvas, pxPerCell) {
+        const size = grid.length;
+        canvas.width = size * pxPerCell;
+        canvas.height = size * pxPerCell;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        for (let y = 0; y < size; y++) {
+            for (let x = 0; x < size; x++) {
+                const cell = grid[y][x];
+                ctx.fillStyle = (cell === 'b' || cell === 'B') ? '#000' : '#fff';
+                ctx.fillRect(x * pxPerCell, y * pxPerCell, pxPerCell, pxPerCell);
+            }
+        }
+    }
+
+    function renderAprilTagToCanvas(tagId, canvas, pxPerCell) {
+        if (!aprilTagFamily || typeof tagId !== 'number') return false;
+        if (tagId < 0 || tagId >= aprilTagFamily.codes.length) return false;
+        renderAprilTagGrid(aprilTagFamily.render(tagId), canvas, pxPerCell || 10);
+        return true;
+    }
+
+    function racerByAprilTagId(tagId) {
+        return getActiveRoster().find(r => r.tagId === tagId) ||
+            settings.racers.find(r => r.tagId === tagId);
+    }
+
+    function mapAprilTagToCarId(tagId) {
+        const racer = racerByAprilTagId(tagId);
+        return racer ? racer.id : null;
+    }
+
+    function openPrintTagsModal(singleRacerId) {
+        initAprilTagFamily().then(() => {
+            const sheet = document.getElementById('print-tags-sheet');
+            const racers = singleRacerId
+                ? settings.racers.filter(r => r.id === singleRacerId)
+                : settings.racers.slice();
+            if (!racers.length) {
+                showToast('Add racers first');
+                return;
+            }
+            sheet.innerHTML = racers.map(r => {
+                const tagNum = typeof r.tagId === 'number' ? r.tagId : '?';
+                return `
+                <div class="tag-print-card">
+                    <canvas width="100" height="100" data-render-tag="${tagNum}"></canvas>
+                    <div class="tag-label">${escapeHtml(r.name)}</div>
+                    <div class="tag-meta">AprilTag #${tagNum}</div>
+                </div>`;
+            }).join('');
+            sheet.querySelectorAll('[data-render-tag]').forEach(c => {
+                renderAprilTagToCanvas(parseInt(c.getAttribute('data-render-tag'), 10), c, 10);
+            });
+            document.getElementById('print-tags-modal').classList.remove('hidden');
+        }).catch(() => alert('Could not load AprilTag library — check internet connection.'));
+    }
+
+    function closePrintTagsModal() {
+        document.getElementById('print-tags-modal').classList.add('hidden');
+    }
+
     function getActiveRoster() {
         const local = settings.racers || [];
         const remote = sensorRoster.length ? sensorRoster : local;
         if (!sensorRoster.length) return local;
         return remote.map(r => {
             const localR = local.find(l => l.id === r.id);
-            if (localR && localR.color && (!r.color || typeof r.color.h !== 'number')) {
-                return Object.assign({}, r, { color: localR.color });
+            let merged = r;
+            if (localR) {
+                if (localR.color && (!r.color || typeof r.color.h !== 'number')) {
+                    merged = Object.assign({}, r, { color: localR.color });
+                }
+                if (typeof localR.tagId === 'number' && typeof r.tagId !== 'number') {
+                    merged = Object.assign({}, merged, { tagId: localR.tagId });
+                }
             }
-            return r;
+            return merged;
         });
     }
 
@@ -1292,6 +1547,14 @@
     function updateSyncedColorStatus() {
         const el = document.getElementById('synced-colors-info');
         if (!el || myRole !== 'sensor') return;
+        if (settings.gateMode === 'apriltag') {
+            const count = getActiveRoster().filter(r => typeof r.tagId === 'number').length;
+            el.classList.toggle('warn', !count);
+            el.textContent = count
+                ? `${count} AprilTag${count === 1 ? '' : 's'} registered — aim printed tag in the green box`
+                : 'No AprilTags — add racers and print tags first';
+            return;
+        }
         const count = getRacersWithColor().length;
         if (!count) {
             el.textContent = 'No synced colors on this phone — sync tape on monitor (or Racers tab here), then check Match below.';
@@ -1602,12 +1865,18 @@
         const colorPanel = document.getElementById('color-gate-panel');
         const manualPanel = document.getElementById('manual-gate-panel');
         if (!badge) return;
-        if (settings.manualGate) {
+        const mode = settings.gateMode || (settings.manualGate ? 'manual' : 'apriltag');
+        settings.manualGate = mode === 'manual';
+        if (mode === 'manual') {
             badge.textContent = 'Manual tap mode';
             if (colorPanel) colorPanel.classList.add('hidden');
             if (manualPanel) manualPanel.classList.remove('hidden');
-        } else {
+        } else if (mode === 'color') {
             badge.textContent = 'Color gate mode';
+            if (colorPanel) colorPanel.classList.remove('hidden');
+            if (manualPanel) manualPanel.classList.add('hidden');
+        } else {
+            badge.textContent = 'AprilTag gate mode';
             if (colorPanel) colorPanel.classList.remove('hidden');
             if (manualPanel) manualPanel.classList.add('hidden');
         }
@@ -2071,6 +2340,7 @@
             motionTrigger: settings.motionTrigger,
             gateBand: settings.gateBand,
             distanceMode: settings.distanceMode,
+            gateMode: settings.gateMode,
             raceStartTime: raceStartTime,
             racers: settings.racers
         };
@@ -2339,7 +2609,15 @@
             if (data.settings.motionTrigger != null) settings.motionTrigger = data.settings.motionTrigger;
             if (data.settings.gateBand) settings.gateBand = data.settings.gateBand;
             if (data.settings.distanceMode != null) settings.distanceMode = data.settings.distanceMode;
+            if (data.settings.gateMode) {
+                settings.gateMode = data.settings.gateMode;
+                settings.manualGate = settings.gateMode === 'manual';
+            }
             if (Array.isArray(data.settings.racers)) sensorRoster = data.settings.racers;
+            if (myRole === 'sensor') {
+                updateGateModeUI();
+                applyGateZoneOverlay();
+            }
             if (myRole === 'sensor' && !document.getElementById('session-panel').classList.contains('hidden')) {
                 applySettingsToUI();
             }
@@ -2445,6 +2723,79 @@
         document.getElementById('last-scan').textContent = formatScanLabel(carId);
     }
 
+    function pickBestAprilDetection(detections) {
+        if (!detections || !detections.length) return null;
+        let best = null;
+        let bestScore = -1;
+        for (const d of detections) {
+            const tagId = d.id != null ? d.id : d.tag_id;
+            if (typeof tagId !== 'number') continue;
+            const carId = mapAprilTagToCarId(tagId);
+            if (!carId) continue;
+            const score = d.decision_margin != null ? d.decision_margin : (d.hamming != null ? -d.hamming : 1);
+            if (score > bestScore) {
+                bestScore = score;
+                best = { tagId, carId, score };
+            }
+        }
+        return best;
+    }
+
+    function processAprilTagFrame(video, canvas, ctx) {
+        const now = Date.now();
+        if (now - lastAprilTagDetectAt < APRILTAG_DETECT_MS) return null;
+        if (!aprilTagDetector || !aprilTagDetector.isReady()) return null;
+        lastAprilTagDetectAt = now;
+
+        const imageData = drawGateCrop(video, canvas, ctx, true);
+        const gray = new Uint8Array(imageData.width * imageData.height);
+        const d = imageData.data;
+        for (let i = 0, j = 0; i < d.length; i += 4, j++) {
+            gray[j] = (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) | 0;
+        }
+        return pickBestAprilDetection(
+            aprilTagDetector.detectGrayscale(gray, imageData.width, imageData.height)
+        );
+    }
+
+    function handleAprilTagDetection(hit, video) {
+        const info = document.getElementById('color-match-info');
+
+        if (!hit) {
+            video.classList.remove('gate-locked');
+            if (info && !gateCarVisible) info.textContent = 'Tag: —';
+
+            if (gateCarVisible && !gateClearTimer) {
+                gateClearTimer = setTimeout(() => {
+                    gateCarVisible = false;
+                    gateCurrentId = '';
+                    gateClearTimer = null;
+                    if (info) info.textContent = 'Tag: —';
+                }, GATE_LATCH_MS);
+            }
+            return;
+        }
+
+        if (gateClearTimer) {
+            clearTimeout(gateClearTimer);
+            gateClearTimer = null;
+        }
+
+        const { carId, tagId } = hit;
+        video.classList.add('gate-locked');
+        const preview = sensorRaceState !== 'racing' ? ' (preview)' : '';
+        if (info) info.textContent = `Tag #${tagId} · ${resolveRacerName(carId)}${preview}`;
+
+        if (!gateCarVisible) {
+            maybeSendGateTrigger(carId, 1);
+        } else if (gateCurrentId !== carId) {
+            maybeSendGateTrigger(carId, 1);
+        }
+        gateCarVisible = true;
+        gateCurrentId = carId;
+        document.getElementById('last-scan').textContent = formatScanLabel(carId);
+    }
+
     async function toggleTorch() {
         const track = videoTrack || calibTrack;
         if (!track) {
@@ -2466,14 +2817,26 @@
     }
 
     function startCameraEngine() {
-        if (settings.manualGate) {
+        const gateMode = settings.gateMode || (settings.manualGate ? 'manual' : 'apriltag');
+        if (gateMode === 'manual') {
             updateSensorStatusUI();
             updateGateModeUI();
             renderManualGateButtons();
             return;
         }
 
-        if (!getRacersWithColor().length) {
+        if (gateMode === 'apriltag') {
+            updateStatus('Loading AprilTag detector…');
+            Promise.all([initAprilTagFamily(), initAprilTagDetector()])
+                .then(() => {
+                    updateStatus('AprilTag gate active — aim tags in green box', 'connected');
+                    updateSyncedColorStatus();
+                })
+                .catch(err => {
+                    console.error(err);
+                    alert('AprilTag detector failed to load. Check internet or try Color gate mode in Settings.');
+                });
+        } else if (!getRacersWithColor().length) {
             updateStatus('No synced colors — sync cars on Racers tab first', 'connected');
         }
 
@@ -2527,7 +2890,12 @@
 
                 if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
 
-                handleColorDetection(processGateFrame(video, canvas, ctx), video);
+                const mode = settings.gateMode || 'apriltag';
+                if (mode === 'apriltag') {
+                    handleAprilTagDetection(processAprilTagFrame(video, canvas, ctx), video);
+                } else {
+                    handleColorDetection(processGateFrame(video, canvas, ctx), video);
+                }
             };
             requestAnimationFrame(scan);
         }).catch(() => {
@@ -2545,7 +2913,12 @@
                     requestAnimationFrame(scan);
                     if (!metaRef || myRole !== 'sensor') return;
                     if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
-                    handleColorDetection(processGateFrame(video, canvas, ctx), video);
+                    const mode = settings.gateMode || 'apriltag';
+                    if (mode === 'apriltag') {
+                        handleAprilTagDetection(processAprilTagFrame(video, canvas, ctx), video);
+                    } else {
+                        handleColorDetection(processGateFrame(video, canvas, ctx), video);
+                    }
                 };
                 requestAnimationFrame(scan);
             }).catch(err => alert('Camera access failed: ' + err.message));
@@ -2677,12 +3050,15 @@
     function addRacer() {
         const name = document.getElementById('racer-name-input').value.trim();
         if (!name) { alert('Enter a car name.'); return; }
-        settings.racers.push({ id: nextRacerId(), name });
+        const tagId = nextAprilTagId();
+        if (tagId == null) { alert('No AprilTag IDs left (max 587).'); return; }
+        settings.racers.push({ id: nextRacerId(), name, tagId });
         saveSettings();
         document.getElementById('racer-name-input').value = '';
         renderRacersList();
         if (myRole === 'monitor') publishRaceState();
-        showToast(`${name} added — sync color next`);
+        showToast(`${name} added — AprilTag #${tagId}`);
+        openPrintTagsModal(settings.racers[settings.racers.length - 1].id);
     }
 
     function removeRacer(id) {
@@ -2698,30 +3074,35 @@
         countEl.textContent = `(${settings.racers.length})`;
 
         if (!settings.racers.length) {
-            list.innerHTML = '<div class="lap-empty">No racers yet — add cars and sync their colors.</div>';
+            list.innerHTML = '<div class="lap-empty">No racers yet — add cars to generate AprilTags.</div>';
             return;
         }
 
         list.innerHTML = settings.racers.map(r => {
-            const swatchStyle = r.color ? `background:${r.color.hex};` : '';
-            const swatchClass = r.color ? 'color-swatch' : 'color-swatch unset';
-            const meta = r.color ? 'Color synced' : 'No color — tap Sync';
+            const tagNum = typeof r.tagId === 'number' ? r.tagId : '?';
             return `
             <div class="racer-row">
-                <div class="${swatchClass}" style="${swatchStyle}"></div>
+                <canvas class="tag-thumb" width="40" height="40" data-tag-thumb="${tagNum}" data-tag-id="${tagNum}"></canvas>
                 <div>
                     <div class="car-name">${escapeHtml(r.name)}</div>
-                    <div class="car-meta">${meta}</div>
+                    <div class="car-meta">AprilTag #${tagNum}</div>
                 </div>
                 <div class="racer-actions">
-                    <button type="button" class="btn btn-primary btn-sm" data-sync-id="${escapeHtml(r.id)}" title="Sync color">Sync</button>
+                    <button type="button" class="btn btn-ghost btn-sm" data-print-tag-id="${escapeHtml(r.id)}" title="Print tag">Print</button>
                     <button type="button" class="btn btn-danger btn-sm" data-remove-id="${escapeHtml(r.id)}" title="Remove">×</button>
                 </div>
             </div>`;
         }).join('');
 
-        list.querySelectorAll('[data-sync-id]').forEach(btn => {
-            btn.addEventListener('click', () => openColorCalib(btn.getAttribute('data-sync-id')));
+        initAprilTagFamily().then(() => {
+            list.querySelectorAll('[data-tag-thumb]').forEach(c => {
+                const id = parseInt(c.getAttribute('data-tag-id'), 10);
+                if (!Number.isNaN(id)) renderAprilTagToCanvas(id, c, 4);
+            });
+        }).catch(() => {});
+
+        list.querySelectorAll('[data-print-tag-id]').forEach(btn => {
+            btn.addEventListener('click', () => openPrintTagsModal(btn.getAttribute('data-print-tag-id')));
         });
         list.querySelectorAll('[data-remove-id]').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -2747,6 +3128,9 @@
     });
     document.getElementById('btn-export').addEventListener('click', exportResults);
     document.getElementById('btn-add-racer').addEventListener('click', addRacer);
+    document.getElementById('btn-print-tags').addEventListener('click', () => openPrintTagsModal());
+    document.getElementById('btn-close-print-tags').addEventListener('click', closePrintTagsModal);
+    document.getElementById('btn-do-print-tags').addEventListener('click', () => window.print());
     document.getElementById('btn-torch').addEventListener('click', toggleTorch);
     document.getElementById('btn-calib-cancel').addEventListener('click', closeColorCalib);
     document.getElementById('btn-calib-capture').addEventListener('click', captureCalibColor);
@@ -2771,7 +3155,7 @@
     ['session-id-input', 'race-name-input', 'race-laps-input',
      'setting-debounce', 'setting-minlap', 'setting-start-grace', 'setting-color-threshold', 'setting-motion-trigger', 'setting-countdown',
      'setting-tts', 'setting-sound', 'setting-mirror', 'setting-haptic', 'setting-manual-gate',
-     'setting-gate-band', 'setting-distance-mode'
+     'setting-gate-band', 'setting-distance-mode', 'setting-gate-mode'
     ].forEach(id => {
         document.getElementById(id).addEventListener('change', () => readSettingsFromUI());
     });
@@ -2784,6 +3168,8 @@
     });
 
     applySettingsToUI();
+
+    initAprilTagFamily().then(() => renderRacersList()).catch(() => {});
 
     initAuth().catch(err => {
         console.error(err);
