@@ -92,6 +92,11 @@
             return this._initPromise;
         }
         isReady() { return this._ready; }
+        setDetectorProfile(decimate) {
+            if (this._ready && this._set_detector_options) {
+                this._set_detector_options(decimate, 0.0, 1, 1, 0, 0, 0);
+            }
+        }
         detectGrayscale(gray, width, height) {
             if (!this._ready) return [];
             var imgBuffer = this._set_img_buffer(width, height, width);
@@ -861,6 +866,24 @@
                 </label>
                 <p class="field-hint">Looser color matching when tape is small in frame. Raise Color match % if you get false laps.</p>
             </div>
+            <div>
+                <label for="setting-tag-capture">AprilTag capture speed</label>
+                <select id="setting-tag-capture">
+                    <option value="fast">Fast RC (recommended)</option>
+                    <option value="balanced">Balanced</option>
+                    <option value="quality">Max detail (slow cars)</option>
+                </select>
+                <p class="field-hint">Fast RC runs more tag scans per second (better for quick passes). Max detail is slower but picks up smaller/distant tags.</p>
+            </div>
+            <div>
+                <label for="setting-camera-fps">Camera FPS target</label>
+                <select id="setting-camera-fps">
+                    <option value="max">Max (device limit)</option>
+                    <option value="60">60 fps</option>
+                    <option value="30">30 fps</option>
+                </select>
+                <p class="field-hint">Higher camera FPS gives fresher frames, but tag scans/sec matters more — see “Tags” count on the camera screen.</p>
+            </div>
         </div>
         <div class="grid-2">
             <div>
@@ -1039,8 +1062,9 @@
             <div class="last-scan" id="scan-status">Waiting for race…</div>
             <div class="last-scan" id="last-scan" style="font-size:0.95rem;margin-top:6px;">—</div>
             <div class="scan-meta">
-                <span>Scans: <strong id="scan-count">0</strong>/s</span>
-                <span>Motion: <strong id="motion-level">—</strong></span>
+                <span>Tags: <strong id="tag-detect-count">0</strong>/s</span>
+                <span>Cam: <strong id="camera-fps">—</strong> fps</span>
+                <span>Loop: <strong id="scan-count">0</strong>/s</span>
                 <span>Sent: <strong id="sent-count">0</strong></span>
             </div>
         </div>
@@ -1113,6 +1137,8 @@
         gateMode: 'apriltag',
         gateBand: 'lower',
         distanceMode: true,
+        tagCapture: 'fast',
+        cameraFps: 'max',
         racers: []
     };
 
@@ -1145,7 +1171,15 @@
     let aprilTagDetector = null;
     let aprilTagDetectorPromise = null;
     let lastAprilTagDetectAt = 0;
-    const APRILTAG_DETECT_MS = 90;
+    let tagDetectFrames = 0;
+    let tagDetectFps = 0;
+    let cameraFpsActual = 0;
+
+    const TAG_CAPTURE_PROFILES = {
+        fast: { scanW: 960, detectMs: 32, decimate: 2.5, label: 'Fast RC' },
+        balanced: { scanW: 1280, detectMs: 50, decimate: 2.0, label: 'Balanced' },
+        quality: { scanW: 1920, detectMs: 95, decimate: 1.5, label: 'Max detail' }
+    };
 
     let settings = loadSettings();
     let authUser = null;
@@ -1210,6 +1244,8 @@
         if (merged.mirrorCamera == null) merged.mirrorCamera = false;
         if (!merged.gateBand) merged.gateBand = DEFAULTS.gateBand;
         if (merged.distanceMode == null) merged.distanceMode = DEFAULTS.distanceMode;
+        if (!merged.tagCapture) merged.tagCapture = DEFAULTS.tagCapture;
+        if (!merged.cameraFps) merged.cameraFps = DEFAULTS.cameraFps;
         if (!merged.gateMode) merged.gateMode = merged.manualGate ? 'manual' : DEFAULTS.gateMode;
         merged.manualGate = merged.gateMode === 'manual';
         if (Array.isArray(data.savedMarkers) && !merged.racers.length) {
@@ -1267,6 +1303,8 @@
             gateMode: settings.gateMode,
             gateBand: settings.gateBand,
             distanceMode: settings.distanceMode,
+            tagCapture: settings.tagCapture,
+            cameraFps: settings.cameraFps,
             racers: settings.racers,
             updatedAt: Date.now()
         };
@@ -1441,10 +1479,13 @@
         document.getElementById('setting-gate-mode').value = settings.gateMode;
         settings.gateBand = document.getElementById('setting-gate-band').value || 'lower';
         settings.distanceMode = document.getElementById('setting-distance-mode').checked;
+        settings.tagCapture = document.getElementById('setting-tag-capture').value || 'fast';
+        settings.cameraFps = document.getElementById('setting-camera-fps').value || 'max';
         saveSettings();
         applyGateZoneOverlay();
         applyLiveVideoMirror();
         updateGateModeUI();
+        applyAprilTagDetectorProfile();
     }
 
     function applySettingsToUI() {
@@ -1465,9 +1506,51 @@
         document.getElementById('setting-gate-mode').value = settings.gateMode || 'apriltag';
         document.getElementById('setting-gate-band').value = settings.gateBand || 'lower';
         document.getElementById('setting-distance-mode').checked = !!settings.distanceMode;
+        document.getElementById('setting-tag-capture').value = settings.tagCapture || 'fast';
+        document.getElementById('setting-camera-fps').value = settings.cameraFps || 'max';
         applyGateZoneOverlay();
         renderRacersList();
         updateGateModeUI();
+    }
+
+    function getTagCaptureProfile() {
+        return TAG_CAPTURE_PROFILES[settings.tagCapture] || TAG_CAPTURE_PROFILES.fast;
+    }
+
+    function applyAprilTagDetectorProfile() {
+        if (!aprilTagDetector || !aprilTagDetector.isReady()) return;
+        aprilTagDetector.setDetectorProfile(getTagCaptureProfile().decimate);
+    }
+
+    function buildCameraConstraints() {
+        const fpsPref = settings.cameraFps || 'max';
+        const video = {
+            facingMode: 'environment',
+            width: { ideal: 1920 },
+            height: { ideal: 1080 }
+        };
+        if (fpsPref === 'max') {
+            video.frameRate = { ideal: 120, min: 30 };
+        } else {
+            const n = parseInt(fpsPref, 10) || 60;
+            video.frameRate = { ideal: n, min: Math.min(n, 30) };
+        }
+        return { video, audio: false };
+    }
+
+    function readCameraTrackFps() {
+        if (!videoTrack || typeof videoTrack.getSettings !== 'function') return 0;
+        const s = videoTrack.getSettings();
+        return s.frameRate ? Math.round(s.frameRate) : 0;
+    }
+
+    function updateSensorScanMeta() {
+        const tagEl = document.getElementById('tag-detect-count');
+        const camEl = document.getElementById('camera-fps');
+        const loopEl = document.getElementById('scan-count');
+        if (tagEl) tagEl.textContent = String(tagDetectFps);
+        if (loopEl) loopEl.textContent = String(scanFps);
+        if (camEl) camEl.textContent = cameraFpsActual > 0 ? String(cameraFpsActual) : '—';
     }
 
     function nextRacerId() {
@@ -1537,6 +1620,7 @@
             await window.__apriltagWasmReady;
             aprilTagDetector = new ApriltagDetector();
             await aprilTagDetector.init();
+            applyAprilTagDetectorProfile();
             return aprilTagDetector;
         })().catch(err => {
             aprilTagDetectorPromise = null;
@@ -1781,11 +1865,13 @@
         return Math.max(0.03, settings.colorThreshold);
     }
 
-    function drawGateCrop(video, canvas, ctx, highRes) {
+    function drawGateCrop(video, canvas, ctx, scanWidth) {
         const vw = video.videoWidth;
         const vh = video.videoHeight;
         const { sx, sy, cropW, cropH } = getGateCropRect(vw, vh);
-        const targetW = highRes ? SCAN_BURST_WIDTH : SCAN_TARGET_WIDTH;
+        let targetW = SCAN_TARGET_WIDTH;
+        if (typeof scanWidth === 'number') targetW = scanWidth;
+        else if (scanWidth === true) targetW = SCAN_BURST_WIDTH;
         canvas.width = targetW;
         canvas.height = Math.max(1, Math.round(targetW * (cropH / cropW)));
         ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, canvas.width, canvas.height);
@@ -2428,6 +2514,8 @@
             gateBand: settings.gateBand,
             distanceMode: settings.distanceMode,
             gateMode: settings.gateMode,
+            tagCapture: settings.tagCapture,
+            cameraFps: settings.cameraFps,
             raceStartTime: raceStartTime,
             racers: settings.racers
         };
@@ -2696,6 +2784,8 @@
             if (data.settings.motionTrigger != null) settings.motionTrigger = data.settings.motionTrigger;
             if (data.settings.gateBand) settings.gateBand = data.settings.gateBand;
             if (data.settings.distanceMode != null) settings.distanceMode = data.settings.distanceMode;
+            if (data.settings.tagCapture) settings.tagCapture = data.settings.tagCapture;
+            if (data.settings.cameraFps) settings.cameraFps = data.settings.cameraFps;
             if (data.settings.gateMode) {
                 settings.gateMode = data.settings.gateMode;
                 settings.manualGate = settings.gateMode === 'manual';
@@ -2704,6 +2794,7 @@
             if (myRole === 'sensor') {
                 updateGateModeUI();
                 applyGateZoneOverlay();
+                applyAprilTagDetectorProfile();
             }
             if (myRole === 'sensor' && !document.getElementById('session-panel').classList.contains('hidden')) {
                 applySettingsToUI();
@@ -2830,11 +2921,13 @@
 
     function processAprilTagFrame(video, canvas, ctx) {
         const now = Date.now();
-        if (now - lastAprilTagDetectAt < APRILTAG_DETECT_MS) return null;
+        const profile = getTagCaptureProfile();
+        if (now - lastAprilTagDetectAt < profile.detectMs) return null;
         if (!aprilTagDetector || !aprilTagDetector.isReady()) return null;
         lastAprilTagDetectAt = now;
+        tagDetectFrames++;
 
-        const imageData = drawGateCrop(video, canvas, ctx, true);
+        const imageData = drawGateCrop(video, canvas, ctx, profile.scanW);
         const gray = new Uint8Array(imageData.width * imageData.height);
         const d = imageData.data;
         for (let i = 0, j = 0; i < d.length; i += 4, j++) {
@@ -2916,7 +3009,8 @@
             updateStatus('Loading AprilTag detector…');
             initAprilTagDetector()
                 .then(() => {
-                    updateStatus('AprilTag gate active — aim tags in green box', 'connected');
+                    const p = getTagCaptureProfile();
+                    updateStatus(`AprilTag gate · ${p.label} · aim tags in green box`, 'connected');
                     updateSyncedColorStatus();
                 })
                 .catch(err => {
@@ -2946,18 +3040,12 @@
         gateFrameBuffer = [];
         gateClearTimer = null;
         let fpsLastTick = Date.now();
+        let cameraFpsLastRead = 0;
 
-        navigator.mediaDevices.getUserMedia({
-            video: {
-                facingMode: 'environment',
-                width: { ideal: 1920 },
-                height: { ideal: 1080 },
-                frameRate: { ideal: 60, min: 30 }
-            },
-            audio: false
-        }).then(stream => {
+        navigator.mediaDevices.getUserMedia(buildCameraConstraints()).then(stream => {
             video.srcObject = stream;
             videoTrack = stream.getVideoTracks()[0] || null;
+            cameraFpsActual = readCameraTrackFps();
             video.setAttribute('playsinline', true);
             return video.play();
         }).then(() => {
@@ -2970,10 +3058,15 @@
                 const fpsNow = Date.now();
                 if (fpsNow - fpsLastTick >= 1000) {
                     scanFps = scanFrames;
+                    tagDetectFps = tagDetectFrames;
                     scanFrames = 0;
+                    tagDetectFrames = 0;
                     fpsLastTick = fpsNow;
-                    const fpsEl = document.getElementById('scan-count');
-                    if (fpsEl) fpsEl.textContent = String(scanFps);
+                    if (fpsNow - cameraFpsLastRead >= 3000) {
+                        cameraFpsActual = readCameraTrackFps();
+                        cameraFpsLastRead = fpsNow;
+                    }
+                    updateSensorScanMeta();
                 }
 
                 if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
@@ -2993,6 +3086,7 @@
             }).then(stream => {
                 video.srcObject = stream;
                 videoTrack = stream.getVideoTracks()[0] || null;
+                cameraFpsActual = readCameraTrackFps();
                 video.setAttribute('playsinline', true);
                 return video.play();
             }).then(() => {
@@ -3000,6 +3094,16 @@
                     if (!scanLoopActive) return;
                     requestAnimationFrame(scan);
                     if (!metaRef || myRole !== 'sensor') return;
+                    scanFrames++;
+                    const fpsNow = Date.now();
+                    if (fpsNow - fpsLastTick >= 1000) {
+                        scanFps = scanFrames;
+                        tagDetectFps = tagDetectFrames;
+                        scanFrames = 0;
+                        tagDetectFrames = 0;
+                        fpsLastTick = fpsNow;
+                        updateSensorScanMeta();
+                    }
                     if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
                     const mode = settings.gateMode || 'apriltag';
                     if (mode === 'apriltag') {
@@ -3243,7 +3347,8 @@
     ['session-id-input', 'race-name-input', 'race-laps-input',
      'setting-debounce', 'setting-minlap', 'setting-start-grace', 'setting-color-threshold', 'setting-motion-trigger', 'setting-countdown',
      'setting-tts', 'setting-sound', 'setting-mirror', 'setting-haptic', 'setting-manual-gate',
-     'setting-gate-band', 'setting-distance-mode', 'setting-gate-mode'
+     'setting-gate-band', 'setting-distance-mode', 'setting-gate-mode',
+     'setting-tag-capture', 'setting-camera-fps'
     ].forEach(id => {
         document.getElementById(id).addEventListener('change', () => readSettingsFromUI());
     });
